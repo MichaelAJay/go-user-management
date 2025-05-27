@@ -573,60 +573,865 @@ func (s *userService) getCachedUser(ctx context.Context, userID string) *User {
 	return nil
 }
 
-// Stub implementations for the remaining interface methods
-// These would be implemented following the same patterns as above
-
+// GetUserByEmail retrieves a user by their email address.
 func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "GetUserByEmail not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.get_user_by_email",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	// Validate email
+	if email == "" {
+		return nil, errors.NewValidationError("email", "email is required")
+	}
+
+	// Normalize email
+	normalizedEmail := s.emailValidator.NormalizeEmail(email)
+
+	// Hash email for lookup
+	hashedEmail := s.encrypter.HashLookupData([]byte(normalizedEmail))
+
+	// Get from repository
+	user, err := s.repository.GetByHashedEmail(ctx, string(hashedEmail))
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			counter := s.metrics.Counter(metrics.Options{
+				Name: "user_service.get_user_by_email.not_found",
+			})
+			counter.Inc()
+			return nil, errors.NewUserNotFoundError(normalizedEmail)
+		}
+		s.logger.Error("Failed to retrieve user by email",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "email", Value: normalizedEmail})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Cache user
+	s.cacheUser(ctx, user)
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.get_user_by_email.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// UpdateProfile updates user profile information.
 func (s *userService) UpdateProfile(ctx context.Context, userID string, req *UpdateProfileRequest) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "UpdateProfile not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.update_profile",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Updating user profile", logger.Field{Key: "user_id", Value: userID})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return nil, err
+	}
+
+	// Validate request
+	if req == nil || req.IsEmpty() {
+		return nil, errors.NewValidationError("request", "no fields to update")
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return nil, errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for profile update",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check if user can be updated
+	if user.Status == UserStatusDeactivated {
+		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot update deactivated user")
+	}
+
+	// Track if email is being changed for additional validation
+	emailChanged := false
+
+	// Update first name if provided
+	if req.FirstName != nil {
+		if err := validation.ValidateName(*req.FirstName, "first_name"); err != nil {
+			return nil, err
+		}
+		encryptedFirstName, err := s.encrypter.Encrypt([]byte(*req.FirstName))
+		if err != nil {
+			s.logger.Error("Failed to encrypt first name", logger.Field{Key: "error", Value: err.Error()})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
+		}
+		user.FirstName = encryptedFirstName
+	}
+
+	// Update last name if provided
+	if req.LastName != nil {
+		if err := validation.ValidateName(*req.LastName, "last_name"); err != nil {
+			return nil, err
+		}
+		encryptedLastName, err := s.encrypter.Encrypt([]byte(*req.LastName))
+		if err != nil {
+			s.logger.Error("Failed to encrypt last name", logger.Field{Key: "error", Value: err.Error()})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
+		}
+		user.LastName = encryptedLastName
+	}
+
+	// Update email if provided
+	if req.Email != nil {
+		emailChanged = true
+		normalizedEmail := s.emailValidator.NormalizeEmail(*req.Email)
+
+		// Validate email
+		if err := s.emailValidator.ValidateEmail(normalizedEmail); err != nil {
+			return nil, err
+		}
+
+		// Hash email for lookup
+		newHashedEmail := s.encrypter.HashLookupData([]byte(normalizedEmail))
+
+		// Check if new email already exists (but not for the same user)
+		if existingUser, err := s.repository.GetByHashedEmail(ctx, string(newHashedEmail)); err == nil {
+			if existingUser.ID != userID {
+				counter := s.metrics.Counter(metrics.Options{
+					Name: "user_service.update_profile.duplicate_email",
+				})
+				counter.Inc()
+				return nil, errors.NewDuplicateEmailError(*req.Email)
+			}
+		} else if !errors.IsErrorType(err, errors.ErrUserNotFound) {
+			s.logger.Error("Failed to check existing email", logger.Field{Key: "error", Value: err.Error()})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to validate email")
+		}
+
+		// Encrypt new email
+		encryptedEmail, err := s.encrypter.Encrypt([]byte(normalizedEmail))
+		if err != nil {
+			s.logger.Error("Failed to encrypt email", logger.Field{Key: "error", Value: err.Error()})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process email")
+		}
+
+		user.Email = encryptedEmail
+		user.HashedEmail = string(newHashedEmail)
+
+		// If email changed, user needs to verify new email
+		if user.Status == UserStatusActive {
+			user.Status = UserStatusPendingVerification
+		}
+	}
+
+	// Update timestamps
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to update user profile",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.update_profile.repository_error",
+		})
+		counter.Inc()
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to update user")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User profile updated successfully",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "email_changed", Value: emailChanged})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.update_profile.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// UpdatePassword updates a user's password.
 func (s *userService) UpdatePassword(ctx context.Context, userID string, req *UpdatePasswordRequest) error {
-	// TODO: Implement
-	return errors.NewAppError(errors.CodeNotImplemented, "UpdatePassword not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.update_password",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Updating user password", logger.Field{Key: "user_id", Value: userID})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return err
+	}
+
+	// Validate request
+	if req == nil {
+		return errors.NewValidationError("request", "request is required")
+	}
+	if req.CurrentPassword == "" {
+		return errors.NewValidationError("current_password", "current password is required")
+	}
+	if req.NewPassword == "" {
+		return errors.NewValidationError("new_password", "new password is required")
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for password update",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check if user can update password
+	if user.Status == UserStatusDeactivated {
+		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot update password for deactivated user")
+	}
+
+	// Verify current password
+	if valid, err := s.encrypter.VerifyPassword(user.Password, []byte(req.CurrentPassword)); err != nil || !valid {
+		s.logger.Warn("Invalid current password for password update",
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.update_password.invalid_current_password",
+		})
+		counter.Inc()
+		return errors.NewAppError(errors.CodeInvalidCredentials, "Current password is incorrect")
+	}
+
+	// Validate new password strength
+	// Get decrypted user info for password validation
+	decryptedFirstName, err := s.encrypter.Decrypt(user.FirstName)
+	if err != nil {
+		s.logger.Error("Failed to decrypt first name for password validation", logger.Field{Key: "error", Value: err.Error()})
+		// Continue without user info validation
+		decryptedFirstName = []byte("")
+	}
+
+	decryptedLastName, err := s.encrypter.Decrypt(user.LastName)
+	if err != nil {
+		s.logger.Error("Failed to decrypt last name for password validation", logger.Field{Key: "error", Value: err.Error()})
+		// Continue without user info validation
+		decryptedLastName = []byte("")
+	}
+
+	decryptedEmail, err := s.encrypter.Decrypt(user.Email)
+	if err != nil {
+		s.logger.Error("Failed to decrypt email for password validation", logger.Field{Key: "error", Value: err.Error()})
+		// Continue without user info validation
+		decryptedEmail = []byte("")
+	}
+
+	userInfo := &validation.UserInfo{
+		FirstName: string(decryptedFirstName),
+		LastName:  string(decryptedLastName),
+		Email:     string(decryptedEmail),
+	}
+
+	if err := s.passwordValidator.ValidatePasswordWithUserInfo(req.NewPassword, userInfo); err != nil {
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.update_password.weak_password",
+		})
+		counter.Inc()
+		return err
+	}
+
+	// Check if new password is different from current
+	if valid, err := s.encrypter.VerifyPassword(user.Password, []byte(req.NewPassword)); err == nil && valid {
+		return errors.NewValidationError("new_password", "new password must be different from current password")
+	}
+
+	// Hash new password
+	hashedPassword, err := s.encrypter.HashPassword([]byte(req.NewPassword))
+	if err != nil {
+		s.logger.Error("Failed to hash new password", logger.Field{Key: "error", Value: err.Error()})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to process new password")
+	}
+
+	// Update user password and reset login attempts
+	user.Password = hashedPassword
+	user.LoginAttempts = 0
+	user.LockedUntil = nil
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to update user password",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.update_password.repository_error",
+		})
+		counter.Inc()
+		return errors.NewAppError(errors.CodeInternalError, "Failed to update password")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User password updated successfully", logger.Field{Key: "user_id", Value: userID})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.update_password.success",
+	})
+	counter.Inc()
+
+	return nil
 }
 
+// ActivateUser activates a user account (typically after email verification).
 func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "ActivateUser not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.activate_user",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Activating user", logger.Field{Key: "user_id", Value: userID})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return nil, err
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return nil, errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for activation",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check current status
+	if user.Status == UserStatusActive {
+		s.logger.Info("User is already active", logger.Field{Key: "user_id", Value: userID})
+		return user.ToUserResponse(), nil
+	}
+
+	if user.Status == UserStatusDeactivated {
+		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot activate deactivated user")
+	}
+
+	if user.Status == UserStatusSuspended {
+		return nil, errors.NewAppError(errors.CodeUserSuspended, "Cannot activate suspended user")
+	}
+
+	// Activate user
+	user.Status = UserStatusActive
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to activate user",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.activate_user.repository_error",
+		})
+		counter.Inc()
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to activate user")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User activated successfully", logger.Field{Key: "user_id", Value: userID})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.activate_user.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// SuspendUser suspends a user account
 func (s *userService) SuspendUser(ctx context.Context, userID string, reason string) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "SuspendUser not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.suspend_user",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Suspending user",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "reason", Value: reason})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return nil, err
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return nil, errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for suspension",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check if user can be suspended
+	if user.Status == UserStatusDeactivated {
+		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot suspend deactivated user")
+	}
+
+	if user.Status == UserStatusSuspended {
+		s.logger.Info("User is already suspended", logger.Field{Key: "user_id", Value: userID})
+		return user.ToUserResponse(), nil
+	}
+
+	// Suspend user
+	user.Status = UserStatusSuspended
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to suspend user",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.suspend_user.repository_error",
+		})
+		counter.Inc()
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to suspend user")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User suspended successfully",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "reason", Value: reason})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.suspend_user.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// DeactivateUser deactivates a user account
 func (s *userService) DeactivateUser(ctx context.Context, userID string, reason string) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "DeactivateUser not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.deactivate_user",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Deactivating user",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "reason", Value: reason})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return nil, err
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return nil, errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for deactivation",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check if user is already deactivated
+	if user.Status == UserStatusDeactivated {
+		s.logger.Info("User is already deactivated", logger.Field{Key: "user_id", Value: userID})
+		return user.ToUserResponse(), nil
+	}
+
+	// Deactivate user
+	user.Status = UserStatusDeactivated
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to deactivate user",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.deactivate_user.repository_error",
+		})
+		counter.Inc()
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to deactivate user")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User deactivated successfully",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "reason", Value: reason})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.deactivate_user.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// LockUser locks a user account
 func (s *userService) LockUser(ctx context.Context, userID string, until *time.Time, reason string) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "LockUser not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.lock_user",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Locking user",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "reason", Value: reason})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return nil, err
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return nil, errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for locking",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check if user can be locked
+	if user.Status == UserStatusDeactivated {
+		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
+	}
+
+	// Lock user account
+	user.LockAccount(until)
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to lock user",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.lock_user.repository_error",
+		})
+		counter.Inc()
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to lock user")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User locked successfully",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "reason", Value: reason})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.lock_user.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// UnlockUser unlocks a user account
 func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "UnlockUser not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.unlock_user",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Unlocking user", logger.Field{Key: "user_id", Value: userID})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return nil, err
+	}
+
+	// Get current user
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return nil, errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for unlocking",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Check if user can be unlocked
+	if user.Status == UserStatusDeactivated {
+		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot unlock deactivated user")
+	}
+
+	// Check if user is actually locked
+	if !user.IsLocked() {
+		s.logger.Info("User is not locked", logger.Field{Key: "user_id", Value: userID})
+		return user.ToUserResponse(), nil
+	}
+
+	// Unlock user account
+	user.UnlockAccount()
+	user.UpdatedAt = time.Now()
+
+	// Save updated user
+	if err := s.repository.Update(ctx, user); err != nil {
+		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
+			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+		}
+		s.logger.Error("Failed to unlock user",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.unlock_user.repository_error",
+		})
+		counter.Inc()
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to unlock user")
+	}
+
+	// Update cache
+	s.cacheUser(ctx, user)
+
+	s.logger.Info("User unlocked successfully", logger.Field{Key: "user_id", Value: userID})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.unlock_user.success",
+	})
+	counter.Inc()
+
+	return user.ToUserResponse(), nil
 }
 
+// ListUsers retrieves users with pagination and filtering
 func (s *userService) ListUsers(ctx context.Context, req *ListUsersRequest) (*ListUsersResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "ListUsers not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.list_users",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	// Validate request
+	if req == nil {
+		return nil, errors.NewValidationError("request", "request is required")
+	}
+
+	// Set defaults
+	if req.Limit <= 0 {
+		req.Limit = 50
+	}
+	if req.Limit > 1000 {
+		req.Limit = 1000
+	}
+	if req.Offset < 0 {
+		req.Offset = 0
+	}
+
+	// Get users from repository
+	users, totalCount, err := s.repository.ListUsers(ctx, req.Offset, req.Limit)
+	if err != nil {
+		s.logger.Error("Failed to list users",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "offset", Value: req.Offset},
+			logger.Field{Key: "limit", Value: req.Limit})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve users")
+	}
+
+	// Convert to response DTOs
+	userResponses := make([]*UserResponse, len(users))
+	for i, user := range users {
+		userResponses[i] = user.ToUserResponse()
+	}
+
+	// Calculate if there are more results
+	hasMore := int64(req.Offset+req.Limit) < totalCount
+
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.list_users.success",
+	})
+	counter.Inc()
+
+	return &ListUsersResponse{
+		Users:      userResponses,
+		TotalCount: totalCount,
+		Offset:     req.Offset,
+		Limit:      req.Limit,
+		HasMore:    hasMore,
+	}, nil
 }
 
+// GetUserStats retrieves user statistics
 func (s *userService) GetUserStats(ctx context.Context) (*UserStatsResponse, error) {
-	// TODO: Implement
-	return nil, errors.NewAppError(errors.CodeNotImplemented, "GetUserStats not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.get_user_stats",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	// Try cache first
+	cacheKey := "user_stats"
+	if cached, _, err := s.cache.Get(ctx, cacheKey); err == nil {
+		if stats, ok := cached.(*UserStatsResponse); ok {
+			counter := s.metrics.Counter(metrics.Options{
+				Name: "user_service.get_user_stats.cache_hit",
+			})
+			counter.Inc()
+			return stats, nil
+		}
+	}
+
+	// Get stats from repository
+	stats, err := s.repository.GetUserStats(ctx)
+	if err != nil {
+		s.logger.Error("Failed to get user stats", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user statistics")
+	}
+
+	response := &UserStatsResponse{
+		Stats:     stats,
+		UpdatedAt: time.Now(),
+	}
+
+	// Cache the response
+	config := &ServiceConfig{}
+	if ttlStr, ok := s.config.GetString("user_service.cache_stats_ttl"); ok {
+		if parsed, parseErr := time.ParseDuration(ttlStr); parseErr == nil {
+			config.CacheStatseTTL = parsed
+		} else {
+			config.CacheStatseTTL = 5 * time.Minute
+		}
+	} else {
+		config.CacheStatseTTL = 5 * time.Minute
+	}
+
+	if err := s.cache.Set(ctx, cacheKey, response, config.CacheStatseTTL); err != nil {
+		s.logger.Warn("Failed to cache user stats", logger.Field{Key: "error", Value: err.Error()})
+	}
+
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.get_user_stats.success",
+	})
+	counter.Inc()
+
+	return response, nil
 }
 
+// DeleteUser deletes a user account
 func (s *userService) DeleteUser(ctx context.Context, userID string) error {
-	// TODO: Implement
-	return errors.NewAppError(errors.CodeNotImplemented, "DeleteUser not implemented")
+	startTime := time.Now()
+	defer func() {
+		timer := s.metrics.Timer(metrics.Options{
+			Name: "user_service.delete_user",
+		})
+		timer.RecordSince(startTime)
+	}()
+
+	s.logger.Info("Deleting user", logger.Field{Key: "user_id", Value: userID})
+
+	// Validate user ID
+	if err := validation.ValidateID(userID, "user_id"); err != nil {
+		return err
+	}
+
+	// Check if user exists first
+	user, err := s.repository.GetByID(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			return errors.NewUserNotFoundError(userID)
+		}
+		s.logger.Error("Failed to retrieve user for deletion",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
+	}
+
+	// Delete user from repository
+	if err := s.repository.Delete(ctx, userID); err != nil {
+		s.logger.Error("Failed to delete user",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.delete_user.repository_error",
+		})
+		counter.Inc()
+		return errors.NewAppError(errors.CodeInternalError, "Failed to delete user")
+	}
+
+	// Remove from cache
+	cacheKey := fmt.Sprintf("user:%s", userID)
+	if err := s.cache.Delete(ctx, cacheKey); err != nil {
+		s.logger.Warn("Failed to remove user from cache",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+	}
+
+	s.logger.Info("User deleted successfully",
+		logger.Field{Key: "user_id", Value: userID},
+		logger.Field{Key: "previous_status", Value: user.Status.String()})
+	counter := s.metrics.Counter(metrics.Options{
+		Name: "user_service.delete_user.success",
+	})
+	counter.Inc()
+
+	return nil
 }

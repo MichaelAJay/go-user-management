@@ -229,6 +229,7 @@ const (
 	CodeServiceUnavailable ErrorCode = "SERVICE_UNAVAILABLE"
 	CodeRateLimitExceeded  ErrorCode = "RATE_LIMIT_EXCEEDED"
 	CodeVersionMismatch    ErrorCode = "VERSION_MISMATCH"
+	CodeNotImplemented     ErrorCode = "NOT_IMPLEMENTED"
 )
 
 // AppError represents a structured application error with context
