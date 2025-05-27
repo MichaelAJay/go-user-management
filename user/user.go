@@ -238,7 +238,10 @@ func (u *User) UpdatePassword(hashedPassword []byte) {
 func (u *User) GetDisplayName() string {
 	// TODO: Implement with encrypter service to decrypt FirstName and LastName
 	// For now, return a placeholder
-	return "User " + u.ID[:8] // Use first 8 chars of ID as placeholder
+	if len(u.ID) >= 8 {
+		return "User " + u.ID[:8] // Use first 8 chars of ID as placeholder
+	}
+	return "User " + u.ID // Use full ID if shorter than 8 chars
 }
 
 // Clone creates a deep copy of the user

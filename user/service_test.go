@@ -123,7 +123,13 @@ func (m *MockUserRepository) GetByHashedEmail(ctx context.Context, hashedEmail s
 	// Check for specific email results first
 	if user, exists := m.getByHashedEmailResults[hashedEmail]; exists {
 		if err, errExists := m.getByHashedEmailErrors[hashedEmail]; errExists {
+			if user != nil {
+				return user.Clone(), err // Return a clone to avoid race conditions
+			}
 			return user, err
+		}
+		if user != nil {
+			return user.Clone(), nil // Return a clone to avoid race conditions
 		}
 		return user, nil
 	}
@@ -134,7 +140,7 @@ func (m *MockUserRepository) GetByHashedEmail(ctx context.Context, hashedEmail s
 	}
 
 	if m.getByHashedEmailUser != nil {
-		return m.getByHashedEmailUser, nil
+		return m.getByHashedEmailUser.Clone(), nil // Return a clone to avoid race conditions
 	}
 
 	// Default behavior for concurrency tests
@@ -1598,7 +1604,7 @@ func TestConcurrentProfileUpdates(t *testing.T) {
 	wg.Wait()
 	close(results)
 
-	// Some may succeed, some may fail with version conflicts
+	// Count successful and failed operations
 	successCount := 0
 	versionConflictCount := 0
 
@@ -1626,4 +1632,334 @@ func (m *MockUserRepository) SetGetByHashedEmailResultForEmail(hashedEmail strin
 	defer m.Unlock()
 	m.getByHashedEmailResults[hashedEmail] = user
 	m.getByHashedEmailErrors[hashedEmail] = err
+}
+
+// Test cases for ActivateUser
+
+func TestActivateUser_Success(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	testUser.Status = UserStatusPendingVerification
+	repo.SetGetByIDResult(testUser, nil)
+	repo.AddUserToMap(testUser)
+
+	user, err := service.ActivateUser(ctx, testUser.ID)
+
+	if err != nil {
+		t.Fatalf("ActivateUser failed: %v", err)
+	}
+
+	if user == nil {
+		t.Fatal("Expected user to be returned, got nil")
+	}
+
+	if user.Status != UserStatusActive {
+		t.Errorf("Expected status to be Active, got %v", user.Status)
+	}
+
+	if repo.GetUpdateCallCount() != 1 {
+		t.Errorf("Expected 1 repository update call, got %d", repo.GetUpdateCallCount())
+	}
+}
+
+func TestActivateUser_AlreadyActive(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	testUser.Status = UserStatusActive
+	repo.SetGetByIDResult(testUser, nil)
+
+	user, err := service.ActivateUser(ctx, testUser.ID)
+
+	if err != nil {
+		t.Fatalf("ActivateUser failed: %v", err)
+	}
+
+	if user == nil {
+		t.Fatal("Expected user to be returned, got nil")
+	}
+
+	if user.Status != UserStatusActive {
+		t.Errorf("Expected status to be Active, got %v", user.Status)
+	}
+}
+
+func TestActivateUser_UserNotFound(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	validUserID := uuid.New().String()
+	repo.SetGetByIDResult(nil, errors.ErrUserNotFound)
+
+	user, err := service.ActivateUser(ctx, validUserID)
+
+	if err == nil {
+		t.Fatal("Expected error for user not found, got nil")
+	}
+
+	if user != nil {
+		t.Fatal("Expected nil user for user not found, got user")
+	}
+
+	if !hasErrorCode(err, errors.CodeUserNotFound) {
+		t.Errorf("Expected user not found error, got %v", err)
+	}
+}
+
+// Test cases for ListUsers
+
+func TestListUsers_Success(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUsers := []*User{createTestUser(), createTestUser()}
+	repo.SetListUsersResult(testUsers, 2, nil)
+
+	req := &ListUsersRequest{
+		Offset: 0,
+		Limit:  10,
+	}
+
+	response, err := service.ListUsers(ctx, req)
+
+	if err != nil {
+		t.Fatalf("ListUsers failed: %v", err)
+	}
+
+	if response == nil {
+		t.Fatal("Expected response to be returned, got nil")
+	}
+
+	if len(response.Users) != 2 {
+		t.Errorf("Expected 2 users, got %d", len(response.Users))
+	}
+
+	if response.TotalCount != 2 {
+		t.Errorf("Expected total count of 2, got %d", response.TotalCount)
+	}
+
+	if response.HasMore {
+		t.Error("Expected HasMore to be false")
+	}
+}
+
+func TestListUsers_WithPagination(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUsers := []*User{createTestUser()}
+	repo.SetListUsersResult(testUsers, 100, nil) // Total count is 100, but only 1 returned
+
+	req := &ListUsersRequest{
+		Offset: 0,
+		Limit:  1,
+	}
+
+	response, err := service.ListUsers(ctx, req)
+
+	if err != nil {
+		t.Fatalf("ListUsers failed: %v", err)
+	}
+
+	if !response.HasMore {
+		t.Error("Expected HasMore to be true")
+	}
+
+	if response.TotalCount != 100 {
+		t.Errorf("Expected total count of 100, got %d", response.TotalCount)
+	}
+}
+
+// Test cases for GetUserStats
+
+func TestGetUserStats_Success(t *testing.T) {
+	service, repo, _, _, cache, _, _ := setupTestService()
+	ctx := context.Background()
+
+	stats := &UserStats{
+		TotalUsers:       100,
+		ActiveUsers:      80,
+		SuspendedUsers:   10,
+		LockedUsers:      5,
+		DeactivatedUsers: 5,
+	}
+	repo.SetUserStatsResult(stats, nil)
+
+	response, err := service.GetUserStats(ctx)
+
+	if err != nil {
+		t.Fatalf("GetUserStats failed: %v", err)
+	}
+
+	if response == nil {
+		t.Fatal("Expected response to be returned, got nil")
+	}
+
+	if response.Stats.TotalUsers != 100 {
+		t.Errorf("Expected 100 total users, got %d", response.Stats.TotalUsers)
+	}
+
+	// Verify caching
+	cached, exists, _ := cache.Get(ctx, "user_stats")
+	if !exists {
+		t.Error("Expected stats to be cached")
+	}
+
+	if cached != nil {
+		if cachedStats, ok := cached.(*UserStatsResponse); ok {
+			if cachedStats.Stats.TotalUsers != 100 {
+				t.Error("Cached stats don't match")
+			}
+		}
+	}
+}
+
+// Test cases for DeleteUser
+
+func TestDeleteUser_Success(t *testing.T) {
+	service, repo, _, _, cache, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	repo.SetGetByIDResult(testUser, nil)
+
+	err := service.DeleteUser(ctx, testUser.ID)
+
+	if err != nil {
+		t.Fatalf("DeleteUser failed: %v", err)
+	}
+
+	if len(repo.deleteCalls) != 1 {
+		t.Errorf("Expected 1 delete call, got %d", len(repo.deleteCalls))
+	}
+
+	// Verify cache deletion
+	cacheKey := fmt.Sprintf("user:%s", testUser.ID)
+	if cache.Has(ctx, cacheKey) {
+		t.Error("Expected user to be removed from cache")
+	}
+}
+
+func TestDeleteUser_UserNotFound(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	validUserID := uuid.New().String()
+	repo.SetGetByIDResult(nil, errors.ErrUserNotFound)
+
+	err := service.DeleteUser(ctx, validUserID)
+
+	if err == nil {
+		t.Fatal("Expected error for user not found, got nil")
+	}
+
+	if !hasErrorCode(err, errors.CodeUserNotFound) {
+		t.Errorf("Expected user not found error, got %v", err)
+	}
+}
+
+// Test cases for SuspendUser
+
+func TestSuspendUser_Success(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	testUser.Status = UserStatusActive
+	repo.SetGetByIDResult(testUser, nil)
+	repo.AddUserToMap(testUser)
+
+	user, err := service.SuspendUser(ctx, testUser.ID, "Policy violation")
+
+	if err != nil {
+		t.Fatalf("SuspendUser failed: %v", err)
+	}
+
+	if user == nil {
+		t.Fatal("Expected user to be returned, got nil")
+	}
+
+	if user.Status != UserStatusSuspended {
+		t.Errorf("Expected status to be Suspended, got %v", user.Status)
+	}
+}
+
+// Test cases for DeactivateUser
+
+func TestDeactivateUser_Success(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	testUser.Status = UserStatusActive
+	repo.SetGetByIDResult(testUser, nil)
+	repo.AddUserToMap(testUser)
+
+	user, err := service.DeactivateUser(ctx, testUser.ID, "User requested")
+
+	if err != nil {
+		t.Fatalf("DeactivateUser failed: %v", err)
+	}
+
+	if user == nil {
+		t.Fatal("Expected user to be returned, got nil")
+	}
+
+	if user.Status != UserStatusDeactivated {
+		t.Errorf("Expected status to be Deactivated, got %v", user.Status)
+	}
+}
+
+// Test cases for LockUser and UnlockUser
+
+func TestLockUser_Success(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	testUser.Status = UserStatusActive
+	repo.SetGetByIDResult(testUser, nil)
+	repo.AddUserToMap(testUser)
+
+	lockUntil := time.Now().Add(time.Hour)
+	user, err := service.LockUser(ctx, testUser.ID, &lockUntil, "Security concern")
+
+	if err != nil {
+		t.Fatalf("LockUser failed: %v", err)
+	}
+
+	if user == nil {
+		t.Fatal("Expected user to be returned, got nil")
+	}
+
+	if !user.AccountLocked {
+		t.Error("Expected user to be locked")
+	}
+}
+
+func TestUnlockUser_Success(t *testing.T) {
+	service, repo, _, _, _, _, _ := setupTestService()
+	ctx := context.Background()
+
+	testUser := createTestUser()
+	testUser.Status = UserStatusLocked
+	repo.SetGetByIDResult(testUser, nil)
+	repo.AddUserToMap(testUser)
+
+	user, err := service.UnlockUser(ctx, testUser.ID)
+
+	if err != nil {
+		t.Fatalf("UnlockUser failed: %v", err)
+	}
+
+	if user == nil {
+		t.Fatal("Expected user to be returned, got nil")
+	}
+
+	if user.AccountLocked {
+		t.Error("Expected user to be unlocked")
+	}
 }

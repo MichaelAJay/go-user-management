@@ -374,28 +374,30 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	// Reset login attempts on successful authentication
-	user.ResetLoginAttempts()
-	user.UpdateLastLogin()
+	// Clone the user to avoid race conditions when multiple goroutines authenticate the same user
+	userCopy := user.Clone()
+	userCopy.ResetLoginAttempts()
+	userCopy.UpdateLastLogin()
 
 	// Update user in repository
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		s.logger.Error("Failed to update user after successful authentication",
 			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: user.ID})
+			logger.Field{Key: "user_id", Value: userCopy.ID})
 		// Continue despite error as authentication was successful
 	}
 
-	// Update cache
-	s.cacheUser(ctx, user)
+	// Update cache with the modified copy
+	s.cacheUser(ctx, userCopy)
 
-	s.logger.Info("User authenticated successfully", logger.Field{Key: "user_id", Value: user.ID})
+	s.logger.Info("User authenticated successfully", logger.Field{Key: "user_id", Value: userCopy.ID})
 	counter := s.metrics.Counter(metrics.Options{
 		Name: "user_service.authenticate_user.success",
 	})
 	counter.Inc()
 
 	return &AuthenticationResponse{
-		User:    user.ToUserResponse(),
+		User:    userCopy.ToUserResponse(),
 		Message: "Authentication successful",
 	}, nil
 }
@@ -659,6 +661,9 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot update deactivated user")
 	}
 
+	// Clone the user to avoid race conditions when multiple goroutines update the same user
+	userCopy := user.Clone()
+
 	// Track if email is being changed for additional validation
 	emailChanged := false
 
@@ -672,7 +677,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 			s.logger.Error("Failed to encrypt first name", logger.Field{Key: "error", Value: err.Error()})
 			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
 		}
-		user.FirstName = encryptedFirstName
+		userCopy.FirstName = encryptedFirstName
 	}
 
 	// Update last name if provided
@@ -685,7 +690,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 			s.logger.Error("Failed to encrypt last name", logger.Field{Key: "error", Value: err.Error()})
 			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
 		}
-		user.LastName = encryptedLastName
+		userCopy.LastName = encryptedLastName
 	}
 
 	// Update email if provided
@@ -722,22 +727,22 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process email")
 		}
 
-		user.Email = encryptedEmail
-		user.HashedEmail = string(newHashedEmail)
+		userCopy.Email = encryptedEmail
+		userCopy.HashedEmail = string(newHashedEmail)
 
 		// If email changed, user needs to verify new email
-		if user.Status == UserStatusActive {
-			user.Status = UserStatusPendingVerification
+		if userCopy.Status == UserStatusActive {
+			userCopy.Status = UserStatusPendingVerification
 		}
 	}
 
 	// Update timestamps
-	user.UpdatedAt = time.Now()
+	userCopy.UpdatedAt = time.Now()
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to update user profile",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -750,7 +755,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User profile updated successfully",
 		logger.Field{Key: "user_id", Value: userID},
@@ -760,7 +765,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return userCopy.ToUserResponse(), nil
 }
 
 // UpdatePassword updates a user's password.
@@ -868,16 +873,19 @@ func (s *userService) UpdatePassword(ctx context.Context, userID string, req *Up
 		return errors.NewAppError(errors.CodeInternalError, "Failed to process new password")
 	}
 
+	// Clone the user to avoid race conditions when multiple goroutines update the same user
+	userCopy := user.Clone()
+
 	// Update user password and reset login attempts
-	user.Password = hashedPassword
-	user.LoginAttempts = 0
-	user.LockedUntil = nil
-	user.UpdatedAt = time.Now()
+	userCopy.Password = hashedPassword
+	userCopy.LoginAttempts = 0
+	userCopy.LockedUntil = nil
+	userCopy.UpdatedAt = time.Now()
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return errors.NewVersionMismatchError(user.Version, user.Version)
+			return errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to update user password",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -890,7 +898,7 @@ func (s *userService) UpdatePassword(ctx context.Context, userID string, req *Up
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User password updated successfully", logger.Field{Key: "user_id", Value: userID})
 	counter := s.metrics.Counter(metrics.Options{
