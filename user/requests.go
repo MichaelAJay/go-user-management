@@ -2,15 +2,18 @@ package user
 
 import (
 	"time"
+
+	"github.com/MichaelAJay/go-user-management/auth"
 )
 
 // CreateUserRequest represents the request to create a new user.
 // This DTO ensures only the necessary fields are exposed for user creation.
 type CreateUserRequest struct {
-	FirstName string `json:"first_name" validate:"required,min=1,max=100"`
-	LastName  string `json:"last_name" validate:"required,min=1,max=100"`
-	Email     string `json:"email" validate:"required,email,max=255"`
-	Password  string `json:"password" validate:"required,min=8,max=128"`
+	FirstName              string            `json:"first_name" validate:"required,min=1,max=100"`
+	LastName               string            `json:"last_name" validate:"required,min=1,max=100"`
+	Email                  string            `json:"email" validate:"required,email,max=255"`
+	Credentials            interface{}       `json:"credentials" validate:"required"`
+	AuthenticationProvider auth.ProviderType `json:"authentication_provider" validate:"required"`
 }
 
 // UpdateProfileRequest represents the request to update user profile information.
@@ -21,31 +24,35 @@ type UpdateProfileRequest struct {
 	Email     *string `json:"email,omitempty" validate:"omitempty,email,max=255"`
 }
 
-// UpdatePasswordRequest represents the request to update a user's password.
-type UpdatePasswordRequest struct {
-	CurrentPassword string `json:"current_password" validate:"required"`
-	NewPassword     string `json:"new_password" validate:"required,min=8,max=128"`
+// UpdateCredentialsRequest represents the request to update a user's authentication credentials.
+type UpdateCredentialsRequest struct {
+	CurrentCredentials     interface{}       `json:"current_credentials" validate:"required"`
+	NewCredentials         interface{}       `json:"new_credentials" validate:"required"`
+	AuthenticationProvider auth.ProviderType `json:"authentication_provider" validate:"required"`
 }
 
 // AuthenticateRequest represents the request to authenticate a user.
 type AuthenticateRequest struct {
-	Email    string `json:"email" validate:"required,email"`
-	Password string `json:"password" validate:"required"`
+	Email                  string            `json:"email" validate:"required,email"`
+	Credentials            interface{}       `json:"credentials" validate:"required"`
+	AuthenticationProvider auth.ProviderType `json:"authentication_provider" validate:"required"`
 }
 
 // UserResponse represents a safe user response that excludes sensitive information.
 // This is returned by API endpoints and excludes encrypted PII and internal fields.
 type UserResponse struct {
-	ID              string     `json:"id"`
-	Status          UserStatus `json:"status"`
-	CreatedAt       time.Time  `json:"created_at"`
-	UpdatedAt       time.Time  `json:"updated_at"`
-	LastLoginAt     *time.Time `json:"last_login_at,omitempty"`
-	Version         int64      `json:"version"`
-	DisplayName     string     `json:"display_name,omitempty"`
-	EmailVerified   bool       `json:"email_verified"`
-	AccountLocked   bool       `json:"account_locked"`
-	CanAuthenticate bool       `json:"can_authenticate"`
+	ID                     string              `json:"id"`
+	Status                 UserStatus          `json:"status"`
+	CreatedAt              time.Time           `json:"created_at"`
+	UpdatedAt              time.Time           `json:"updated_at"`
+	LastLoginAt            *time.Time          `json:"last_login_at,omitempty"`
+	Version                int64               `json:"version"`
+	DisplayName            string              `json:"display_name,omitempty"`
+	EmailVerified          bool                `json:"email_verified"`
+	AccountLocked          bool                `json:"account_locked"`
+	CanAuthenticate        bool                `json:"can_authenticate"`
+	PrimaryAuthProvider    auth.ProviderType   `json:"primary_auth_provider"`
+	AvailableAuthProviders []auth.ProviderType `json:"available_auth_providers"`
 }
 
 // DetailedUserResponse represents a more detailed user response for admin operations.
@@ -59,9 +66,10 @@ type DetailedUserResponse struct {
 
 // AuthenticationResponse represents the response after successful authentication.
 type AuthenticationResponse struct {
-	User        *UserResponse `json:"user"`
-	SessionData *SessionData  `json:"session,omitempty"`
-	Message     string        `json:"message"`
+	User        *UserResponse              `json:"user"`
+	SessionData *SessionData               `json:"session,omitempty"`
+	AuthResult  *auth.AuthenticationResult `json:"auth_result,omitempty"`
+	Message     string                     `json:"message"`
 }
 
 // SessionData represents minimal session information returned to the client.
@@ -117,17 +125,25 @@ type UserStatsResponse struct {
 // toUserResponse converts a User entity to a UserResponse DTO.
 // This method excludes sensitive information and provides computed fields.
 func (u *User) ToUserResponse() *UserResponse {
+	// Get available authentication providers
+	availableProviders := make([]auth.ProviderType, 0, len(u.AuthenticationData))
+	for providerType := range u.AuthenticationData {
+		availableProviders = append(availableProviders, providerType)
+	}
+
 	return &UserResponse{
-		ID:              u.ID,
-		Status:          u.Status,
-		CreatedAt:       u.CreatedAt,
-		UpdatedAt:       u.UpdatedAt,
-		LastLoginAt:     u.LastLoginAt,
-		Version:         u.Version,
-		DisplayName:     u.GetDisplayName(),
-		EmailVerified:   u.Status != UserStatusPendingVerification,
-		AccountLocked:   u.IsLocked(),
-		CanAuthenticate: u.CanAuthenticate(),
+		ID:                     u.ID,
+		Status:                 u.Status,
+		CreatedAt:              u.CreatedAt,
+		UpdatedAt:              u.UpdatedAt,
+		LastLoginAt:            u.LastLoginAt,
+		Version:                u.Version,
+		DisplayName:            u.GetDisplayName(),
+		EmailVerified:          u.Status != UserStatusPendingVerification,
+		AccountLocked:          u.IsLocked(),
+		CanAuthenticate:        u.CanAuthenticate(),
+		PrimaryAuthProvider:    u.PrimaryAuthProvider,
+		AvailableAuthProviders: availableProviders,
 	}
 }
 

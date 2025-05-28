@@ -3,6 +3,7 @@ package user
 import (
 	"time"
 
+	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
 	"github.com/google/uuid"
 )
@@ -71,8 +72,12 @@ type User struct {
 	// This allows efficient querying without exposing the actual email
 	HashedEmail string `json:"-"` // Hidden from JSON serialization
 
-	// Password is the hashed password using Argon2id
-	Password []byte `json:"-"` // Hidden from JSON serialization for security
+	// AuthenticationData stores provider-specific authentication data
+	// This replaces the Password field to support multiple authentication providers
+	AuthenticationData map[auth.ProviderType]interface{} `json:"-"` // Hidden from JSON serialization for security
+
+	// PrimaryAuthProvider indicates the primary authentication provider for this user
+	PrimaryAuthProvider auth.ProviderType `json:"primary_auth_provider"`
 
 	// Status represents the current status of the user account
 	Status UserStatus `json:"status"`
@@ -102,18 +107,22 @@ type User struct {
 
 // NewUser creates a new User instance with required fields
 // Returns a User with a new UUID and default values
-func NewUser(firstName, lastName, email, hashedEmail string, hashedPassword []byte) *User {
+func NewUser(firstName, lastName, email, hashedEmail string, primaryProvider auth.ProviderType, authData interface{}) *User {
 	now := time.Now()
 
+	authenticationData := make(map[auth.ProviderType]interface{})
+	authenticationData[primaryProvider] = authData
+
 	return &User{
-		ID:            uuid.New().String(),
-		HashedEmail:   hashedEmail,
-		Password:      hashedPassword,
-		Status:        UserStatusPendingVerification, // Default to pending verification
-		CreatedAt:     now,
-		UpdatedAt:     now,
-		LoginAttempts: 0,
-		Version:       1,
+		ID:                  uuid.New().String(),
+		HashedEmail:         hashedEmail,
+		AuthenticationData:  authenticationData,
+		PrimaryAuthProvider: primaryProvider,
+		Status:              UserStatusPendingVerification, // Default to pending verification
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		LoginAttempts:       0,
+		Version:             1,
 	}
 }
 
@@ -226,12 +235,49 @@ func (u *User) UpdateProfile() {
 	u.Version++
 }
 
-// UpdatePassword updates the user's password hash
+// UpdateAuthenticationData updates the user's authentication data for a specific provider
 // This method also increments the version for optimistic locking
-func (u *User) UpdatePassword(hashedPassword []byte) {
-	u.Password = hashedPassword
+func (u *User) UpdateAuthenticationData(providerType auth.ProviderType, authData interface{}) {
+	if u.AuthenticationData == nil {
+		u.AuthenticationData = make(map[auth.ProviderType]interface{})
+	}
+	u.AuthenticationData[providerType] = authData
 	u.UpdatedAt = time.Now()
 	u.Version++
+}
+
+// GetAuthenticationData returns the authentication data for a specific provider
+func (u *User) GetAuthenticationData(providerType auth.ProviderType) (interface{}, bool) {
+	if u.AuthenticationData == nil {
+		return nil, false
+	}
+	data, exists := u.AuthenticationData[providerType]
+	return data, exists
+}
+
+// HasAuthenticationProvider checks if the user has authentication data for a specific provider
+func (u *User) HasAuthenticationProvider(providerType auth.ProviderType) bool {
+	_, exists := u.GetAuthenticationData(providerType)
+	return exists
+}
+
+// AddAuthenticationProvider adds a new authentication provider to the user
+func (u *User) AddAuthenticationProvider(providerType auth.ProviderType, authData interface{}) {
+	if u.AuthenticationData == nil {
+		u.AuthenticationData = make(map[auth.ProviderType]interface{})
+	}
+	u.AuthenticationData[providerType] = authData
+	u.UpdatedAt = time.Now()
+	u.Version++
+}
+
+// RemoveAuthenticationProvider removes an authentication provider from the user
+func (u *User) RemoveAuthenticationProvider(providerType auth.ProviderType) {
+	if u.AuthenticationData != nil {
+		delete(u.AuthenticationData, providerType)
+		u.UpdatedAt = time.Now()
+		u.Version++
+	}
 }
 
 // GetDisplayName returns a formatted display name for the user
@@ -265,9 +311,12 @@ func (u *User) Clone() *User {
 		copy(clone.Email, u.Email)
 	}
 
-	if u.Password != nil {
-		clone.Password = make([]byte, len(u.Password))
-		copy(clone.Password, u.Password)
+	// Deep copy authentication data map
+	if u.AuthenticationData != nil {
+		clone.AuthenticationData = make(map[auth.ProviderType]interface{})
+		for k, v := range u.AuthenticationData {
+			clone.AuthenticationData[k] = v
+		}
 	}
 
 	// Deep copy time pointers
@@ -296,7 +345,12 @@ func (u *User) Validate() error {
 		return errors.ErrInvalidEmail
 	}
 
-	if len(u.Password) == 0 {
+	if u.AuthenticationData == nil || len(u.AuthenticationData) == 0 {
+		return errors.ErrInvalidPassword
+	}
+
+	// Validate that primary auth provider exists in authentication data
+	if _, exists := u.AuthenticationData[u.PrimaryAuthProvider]; !exists {
 		return errors.ErrInvalidPassword
 	}
 

@@ -1,0 +1,147 @@
+package auth
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/MichaelAJay/go-logger"
+	"github.com/MichaelAJay/go-metrics"
+	"github.com/MichaelAJay/go-user-management/errors"
+)
+
+// Manager coordinates authentication across multiple providers.
+// This follows the Strategy pattern, allowing different authentication
+// methods to be used interchangeably.
+//
+// Best Practice: Open/Closed Principle - new authentication providers
+// can be added without modifying existing code.
+type Manager struct {
+	providers map[ProviderType]AuthenticationProvider
+	logger    logger.Logger
+	metrics   metrics.Registry
+}
+
+// NewManager creates a new authentication manager.
+func NewManager(logger logger.Logger, metrics metrics.Registry) *Manager {
+	return &Manager{
+		providers: make(map[ProviderType]AuthenticationProvider),
+		logger:    logger,
+		metrics:   metrics,
+	}
+}
+
+// RegisterProvider registers an authentication provider with the manager.
+// This allows for dynamic registration of providers at runtime.
+//
+// Best Practice: Registry pattern - providers are registered dynamically,
+// making the system extensible and testable.
+func (m *Manager) RegisterProvider(provider AuthenticationProvider) error {
+	providerType := provider.GetProviderType()
+
+	if _, exists := m.providers[providerType]; exists {
+		return fmt.Errorf("provider of type %s is already registered", providerType)
+	}
+
+	m.providers[providerType] = provider
+	m.logger.Info("Authentication provider registered",
+		logger.Field{Key: "provider_type", Value: string(providerType)})
+
+	return nil
+}
+
+// GetProvider returns the authentication provider for the specified type.
+func (m *Manager) GetProvider(providerType ProviderType) (AuthenticationProvider, error) {
+	provider, exists := m.providers[providerType]
+	if !exists {
+		return nil, fmt.Errorf("no provider registered for type %s", providerType)
+	}
+
+	return provider, nil
+}
+
+// Authenticate authenticates a user using the specified provider.
+func (m *Manager) Authenticate(ctx context.Context, req *AuthenticationRequest) (*AuthenticationResult, error) {
+	provider, err := m.GetProvider(req.ProviderType)
+	if err != nil {
+		counter := m.metrics.Counter(metrics.Options{
+			Name: "auth_manager.authenticate.provider_not_found",
+		})
+		counter.Inc()
+		return nil, errors.NewValidationError("provider_type", err.Error())
+	}
+
+	result, err := provider.Authenticate(ctx, req.Identifier, req.Credentials)
+	if err != nil {
+		counter := m.metrics.Counter(metrics.Options{
+			Name: "auth_manager.authenticate.failed",
+			Tags: map[string]string{
+				"provider_type": string(req.ProviderType),
+			},
+		})
+		counter.Inc()
+		return nil, err
+	}
+
+	// Ensure the result has the correct provider type
+	result.ProviderType = req.ProviderType
+
+	counter := m.metrics.Counter(metrics.Options{
+		Name: "auth_manager.authenticate.success",
+		Tags: map[string]string{
+			"provider_type": string(req.ProviderType),
+		},
+	})
+	counter.Inc()
+
+	return result, nil
+}
+
+// ValidateCredentials validates credentials using the specified provider.
+func (m *Manager) ValidateCredentials(ctx context.Context, providerType ProviderType, credentials interface{}, userInfo *UserInfo) error {
+	provider, err := m.GetProvider(providerType)
+	if err != nil {
+		return errors.NewValidationError("provider_type", err.Error())
+	}
+
+	return provider.ValidateCredentials(ctx, credentials, userInfo)
+}
+
+// UpdateCredentials updates credentials using the specified provider.
+func (m *Manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (interface{}, error) {
+	provider, err := m.GetProvider(req.ProviderType)
+	if err != nil {
+		return nil, errors.NewValidationError("provider_type", err.Error())
+	}
+
+	if !provider.SupportsCredentialUpdate() {
+		return nil, errors.NewValidationError("provider_type",
+			fmt.Sprintf("provider %s does not support credential updates", req.ProviderType))
+	}
+
+	return provider.UpdateCredentials(ctx, req.UserID, req.OldCredentials, req.NewCredentials)
+}
+
+// PrepareCredentials prepares credentials for storage using the specified provider.
+func (m *Manager) PrepareCredentials(ctx context.Context, providerType ProviderType, credentials interface{}) (interface{}, error) {
+	provider, err := m.GetProvider(providerType)
+	if err != nil {
+		return nil, errors.NewValidationError("provider_type", err.Error())
+	}
+
+	return provider.PrepareCredentials(ctx, credentials)
+}
+
+// ListProviders returns a list of registered provider types.
+func (m *Manager) ListProviders() []ProviderType {
+	types := make([]ProviderType, 0, len(m.providers))
+	for providerType := range m.providers {
+		types = append(types, providerType)
+	}
+	return types
+}
+
+// HasProvider checks if a provider of the specified type is registered.
+func (m *Manager) HasProvider(providerType ProviderType) bool {
+	_, exists := m.providers[providerType]
+	return exists
+}

@@ -5,9 +5,10 @@ go 1.23.3
 require (
 	github.com/MichaelAJay/go-cache v0.1.0
 	github.com/google/uuid v1.6.0
-)	
+)
 
 require (
+	github.com/kr/text v0.2.0 // indirect
 	golang.org/x/crypto v0.38.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
@@ -15,8 +16,8 @@ require (
 require (
 	github.com/MichaelAJay/go-config v0.1.0
 	github.com/MichaelAJay/go-encrypter v0.1.2
-	github.com/MichaelAJay/go-logger v0.1.0 // indirect
-	github.com/MichaelAJay/go-metrics v0.1.0 // indirect
+	github.com/MichaelAJay/go-logger v0.1.0
+	github.com/MichaelAJay/go-metrics v0.1.0
 	github.com/MichaelAJay/go-serializer v0.2.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect

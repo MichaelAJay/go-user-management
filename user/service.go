@@ -10,6 +10,8 @@ import (
 	"github.com/MichaelAJay/go-encrypter"
 	"github.com/MichaelAJay/go-logger"
 	"github.com/MichaelAJay/go-metrics"
+	"github.com/MichaelAJay/go-user-management/auth"
+	"github.com/MichaelAJay/go-user-management/auth/providers/password"
 	"github.com/MichaelAJay/go-user-management/errors"
 	"github.com/MichaelAJay/go-user-management/validation"
 )
@@ -32,8 +34,8 @@ type UserService interface {
 	// UpdateProfile updates user profile information
 	UpdateProfile(ctx context.Context, userID string, req *UpdateProfileRequest) (*UserResponse, error)
 
-	// UpdatePassword updates a user's password
-	UpdatePassword(ctx context.Context, userID string, req *UpdatePasswordRequest) error
+	// UpdateCredentials updates a user's authentication credentials
+	UpdateCredentials(ctx context.Context, userID string, req *UpdateCredentialsRequest) error
 
 	// ActivateUser activates a user account (typically after email verification)
 	ActivateUser(ctx context.Context, userID string) (*UserResponse, error)
@@ -62,14 +64,14 @@ type UserService interface {
 
 // userService implements the UserService interface.
 type userService struct {
-	repository        UserRepository
-	encrypter         encrypter.Encrypter
-	logger            logger.Logger
-	cache             cache.Cache
-	config            config.Config
-	metrics           metrics.Registry
-	emailValidator    *validation.EmailValidator
-	passwordValidator *validation.PasswordValidator
+	repository     UserRepository
+	encrypter      encrypter.Encrypter
+	logger         logger.Logger
+	cache          cache.Cache
+	config         config.Config
+	metrics        metrics.Registry
+	emailValidator *validation.EmailValidator
+	authManager    *auth.Manager
 }
 
 // ServiceConfig contains configuration for the UserService.
@@ -91,15 +93,6 @@ type ServiceConfig struct {
 	AllowDisposableEmails bool     `json:"allow_disposable_emails" default:"false"`
 	AllowedEmailDomains   []string `json:"allowed_email_domains"`
 	BlockedEmailDomains   []string `json:"blocked_email_domains"`
-
-	// Password validation settings
-	PasswordMinLength      int     `json:"password_min_length" default:"8"`
-	PasswordMaxLength      int     `json:"password_max_length" default:"128"`
-	PasswordMinEntropy     float64 `json:"password_min_entropy" default:"30.0"`
-	RequirePasswordUpper   bool    `json:"require_password_upper" default:"true"`
-	RequirePasswordLower   bool    `json:"require_password_lower" default:"true"`
-	RequirePasswordNumber  bool    `json:"require_password_number" default:"true"`
-	RequirePasswordSpecial bool    `json:"require_password_special" default:"true"`
 }
 
 // NewUserService creates a new UserService instance with the provided dependencies.
@@ -110,6 +103,7 @@ func NewUserService(
 	cache cache.Cache,
 	config config.Config,
 	metrics metrics.Registry,
+	authManager *auth.Manager,
 ) UserService {
 	// Load service configuration
 	serviceConfig := &ServiceConfig{}
@@ -129,25 +123,15 @@ func NewUserService(
 	emailValidator.AllowedDomains = serviceConfig.AllowedEmailDomains
 	emailValidator.BlockedDomains = serviceConfig.BlockedEmailDomains
 
-	// Configure password validator
-	passwordValidator := validation.NewPasswordValidator()
-	passwordValidator.MinLength = serviceConfig.PasswordMinLength
-	passwordValidator.MaxLength = serviceConfig.PasswordMaxLength
-	passwordValidator.MinEntropy = serviceConfig.PasswordMinEntropy
-	passwordValidator.RequireUppercase = serviceConfig.RequirePasswordUpper
-	passwordValidator.RequireLowercase = serviceConfig.RequirePasswordLower
-	passwordValidator.RequireNumbers = serviceConfig.RequirePasswordNumber
-	passwordValidator.RequireSpecialChars = serviceConfig.RequirePasswordSpecial
-
 	return &userService{
-		repository:        repository,
-		encrypter:         encrypter,
-		logger:            logger,
-		cache:             cache,
-		config:            config,
-		metrics:           metrics,
-		emailValidator:    emailValidator,
-		passwordValidator: passwordValidator,
+		repository:     repository,
+		encrypter:      encrypter,
+		logger:         logger,
+		cache:          cache,
+		config:         config,
+		metrics:        metrics,
+		emailValidator: emailValidator,
+		authManager:    authManager,
 	}
 }
 
@@ -182,15 +166,15 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		return nil, err
 	}
 
-	// Validate password
-	userInfo := &validation.UserInfo{
+	// Validate credentials using authentication manager
+	userInfo := &auth.UserInfo{
 		FirstName: req.FirstName,
 		LastName:  req.LastName,
 		Email:     normalizedEmail,
 	}
-	if err := s.passwordValidator.ValidatePasswordWithUserInfo(req.Password, userInfo); err != nil {
+	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, req.Credentials, userInfo); err != nil {
 		counter := s.metrics.Counter(metrics.Options{
-			Name: "user_service.create_user.password_validation_error",
+			Name: "user_service.create_user.credential_validation_error",
 		})
 		counter.Inc()
 		return nil, err
@@ -230,15 +214,15 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
 	}
 
-	// Hash password
-	hashedPassword, err := s.encrypter.HashPassword([]byte(req.Password))
+	// Prepare credentials for storage using authentication manager
+	authData, err := s.authManager.PrepareCredentials(ctx, req.AuthenticationProvider, req.Credentials)
 	if err != nil {
-		s.logger.Error("Failed to hash password", logger.Field{Key: "error", Value: err.Error()})
-		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process password")
+		s.logger.Error("Failed to prepare credentials", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process credentials")
 	}
 
 	// Create user entity
-	user := NewUser(req.FirstName, req.LastName, normalizedEmail, string(hashedEmail), hashedPassword)
+	user := NewUser(req.FirstName, req.LastName, normalizedEmail, string(hashedEmail), req.AuthenticationProvider, authData)
 	user.FirstName = encryptedFirstName
 	user.LastName = encryptedLastName
 	user.Email = encryptedEmail
@@ -329,8 +313,40 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		return nil, errors.NewAppError(errors.CodeAccountNotActivated, "Account is not active")
 	}
 
-	// Verify password - note the parameter order: password first, then hash
-	if valid, err := s.encrypter.VerifyPassword(user.Password, []byte(req.Password)); err != nil || !valid {
+	// Get the authentication provider to verify credentials
+	provider, err := s.authManager.GetProvider(req.AuthenticationProvider)
+	if err != nil {
+		s.logger.Error("Authentication provider not found", logger.Field{Key: "provider", Value: string(req.AuthenticationProvider)})
+		return nil, errors.NewInvalidCredentialsError()
+	}
+
+	// Get stored authentication data for this provider
+	storedAuthData, exists := user.GetAuthenticationData(req.AuthenticationProvider)
+	if !exists {
+		s.logger.Warn("User does not have authentication data for provider",
+			logger.Field{Key: "user_id", Value: user.ID},
+			logger.Field{Key: "provider", Value: string(req.AuthenticationProvider)})
+		return nil, errors.NewInvalidCredentialsError()
+	}
+
+	// For password provider, we need to verify the password directly
+	// This is a temporary solution until we refactor the provider interface
+	var valid bool
+	if req.AuthenticationProvider == auth.ProviderTypePassword {
+		// Type assert to password provider and verify
+		if passwordProvider, ok := provider.(*password.Provider); ok {
+			valid, err = passwordProvider.VerifyPassword(ctx, storedAuthData, req.Credentials.(string))
+		} else {
+			s.logger.Error("Invalid password provider type")
+			return nil, errors.NewInvalidCredentialsError()
+		}
+	} else {
+		// For other providers, use the standard authenticate method
+		_, err = provider.Authenticate(ctx, normalizedEmail, req.Credentials)
+		valid = err == nil
+	}
+
+	if err != nil || !valid {
 		// Increment login attempts
 		user.IncrementLoginAttempts()
 
@@ -399,9 +415,21 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	})
 	counter.Inc()
 
+	// Create authentication result
+	authResult := &auth.AuthenticationResult{
+		UserID:         userCopy.ID,
+		ProviderType:   req.AuthenticationProvider,
+		ProviderUserID: normalizedEmail,
+		SessionData: map[string]interface{}{
+			"auth_method": string(req.AuthenticationProvider),
+			"auth_time":   time.Now(),
+		},
+	}
+
 	return &AuthenticationResponse{
-		User:    userCopy.ToUserResponse(),
-		Message: "Authentication successful",
+		User:       userCopy.ToUserResponse(),
+		AuthResult: authResult,
+		Message:    "Authentication successful",
 	}, nil
 }
 
@@ -476,9 +504,14 @@ func (s *userService) validateCreateUserRequest(req *CreateUserRequest) error {
 		return errors.NewValidationError("email", "email is required")
 	}
 
-	// Basic password validation (detailed validation happens later)
-	if req.Password == "" {
-		return errors.NewValidationError("password", "password is required")
+	// Basic credentials validation (detailed validation happens later)
+	if req.Credentials == nil {
+		return errors.NewValidationError("credentials", "credentials are required")
+	}
+
+	// Validate authentication provider
+	if req.AuthenticationProvider == "" {
+		return errors.NewValidationError("authentication_provider", "authentication provider is required")
 	}
 
 	return nil
@@ -824,17 +857,17 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	return userCopy.ToUserResponse(), nil
 }
 
-// UpdatePassword updates a user's password.
-func (s *userService) UpdatePassword(ctx context.Context, userID string, req *UpdatePasswordRequest) error {
+// UpdateCredentials updates a user's authentication credentials.
+func (s *userService) UpdateCredentials(ctx context.Context, userID string, req *UpdateCredentialsRequest) error {
 	startTime := time.Now()
 	defer func() {
 		timer := s.metrics.Timer(metrics.Options{
-			Name: "user_service.update_password",
+			Name: "user_service.update_credentials",
 		})
 		timer.RecordSince(startTime)
 	}()
 
-	s.logger.Info("Updating user password", logger.Field{Key: "user_id", Value: userID})
+	s.logger.Info("Updating user credentials", logger.Field{Key: "user_id", Value: userID})
 
 	// Validate user ID
 	if err := validation.ValidateID(userID, "user_id"); err != nil {
@@ -845,11 +878,11 @@ func (s *userService) UpdatePassword(ctx context.Context, userID string, req *Up
 	if req == nil {
 		return errors.NewValidationError("request", "request is required")
 	}
-	if req.CurrentPassword == "" {
-		return errors.NewValidationError("current_password", "current password is required")
+	if req.CurrentCredentials == nil {
+		return errors.NewValidationError("current_credentials", "current credentials are required")
 	}
-	if req.NewPassword == "" {
-		return errors.NewValidationError("new_password", "new password is required")
+	if req.NewCredentials == nil {
+		return errors.NewValidationError("new_credentials", "new credentials are required")
 	}
 
 	// Get current user
@@ -858,107 +891,96 @@ func (s *userService) UpdatePassword(ctx context.Context, userID string, req *Up
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return errors.NewUserNotFoundError(userID)
 		}
-		s.logger.Error("Failed to retrieve user for password update",
+		s.logger.Error("Failed to retrieve user for credential update",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
 		return errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
 	}
 
-	// Check if user can update password
+	// Check if user can update credentials
 	if user.Status == UserStatusDeactivated {
-		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot update password for deactivated user")
+		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot update credentials for deactivated user")
 	}
 
-	// Verify current password
-	if valid, err := s.encrypter.VerifyPassword(user.Password, []byte(req.CurrentPassword)); err != nil || !valid {
-		s.logger.Warn("Invalid current password for password update",
-			logger.Field{Key: "user_id", Value: userID})
-		counter := s.metrics.Counter(metrics.Options{
-			Name: "user_service.update_password.invalid_current_password",
-		})
-		counter.Inc()
-		return errors.NewAppError(errors.CodeInvalidCredentials, "Current password is incorrect")
-	}
-
-	// Validate new password strength
-	// Get decrypted user info for password validation
+	// Validate new credentials using authentication manager
+	// Get decrypted user info for validation
 	decryptedFirstName, err := s.encrypter.Decrypt(user.FirstName)
 	if err != nil {
-		s.logger.Error("Failed to decrypt first name for password validation", logger.Field{Key: "error", Value: err.Error()})
-		// Continue without user info validation
+		s.logger.Error("Failed to decrypt first name for credential validation", logger.Field{Key: "error", Value: err.Error()})
 		decryptedFirstName = []byte("")
 	}
 
 	decryptedLastName, err := s.encrypter.Decrypt(user.LastName)
 	if err != nil {
-		s.logger.Error("Failed to decrypt last name for password validation", logger.Field{Key: "error", Value: err.Error()})
-		// Continue without user info validation
+		s.logger.Error("Failed to decrypt last name for credential validation", logger.Field{Key: "error", Value: err.Error()})
 		decryptedLastName = []byte("")
 	}
 
 	decryptedEmail, err := s.encrypter.Decrypt(user.Email)
 	if err != nil {
-		s.logger.Error("Failed to decrypt email for password validation", logger.Field{Key: "error", Value: err.Error()})
-		// Continue without user info validation
+		s.logger.Error("Failed to decrypt email for credential validation", logger.Field{Key: "error", Value: err.Error()})
 		decryptedEmail = []byte("")
 	}
 
-	userInfo := &validation.UserInfo{
+	userInfo := &auth.UserInfo{
+		UserID:    userID,
 		FirstName: string(decryptedFirstName),
 		LastName:  string(decryptedLastName),
 		Email:     string(decryptedEmail),
+		CreatedAt: user.CreatedAt,
 	}
 
-	if err := s.passwordValidator.ValidatePasswordWithUserInfo(req.NewPassword, userInfo); err != nil {
+	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, req.NewCredentials, userInfo); err != nil {
 		counter := s.metrics.Counter(metrics.Options{
-			Name: "user_service.update_password.weak_password",
+			Name: "user_service.update_credentials.weak_credentials",
 		})
 		counter.Inc()
 		return err
 	}
 
-	// Check if new password is different from current
-	if valid, err := s.encrypter.VerifyPassword(user.Password, []byte(req.NewPassword)); err == nil && valid {
-		return errors.NewValidationError("new_password", "new password must be different from current password")
+	// Use authentication manager to update credentials
+	credentialUpdateReq := &auth.CredentialUpdateRequest{
+		UserID:         userID,
+		OldCredentials: req.CurrentCredentials,
+		NewCredentials: req.NewCredentials,
+		ProviderType:   req.AuthenticationProvider,
 	}
 
-	// Hash new password
-	hashedPassword, err := s.encrypter.HashPassword([]byte(req.NewPassword))
+	newAuthData, err := s.authManager.UpdateCredentials(ctx, credentialUpdateReq)
 	if err != nil {
-		s.logger.Error("Failed to hash new password", logger.Field{Key: "error", Value: err.Error()})
-		return errors.NewAppError(errors.CodeInternalError, "Failed to process new password")
+		s.logger.Error("Failed to update credentials", logger.Field{Key: "error", Value: err.Error()})
+		return err
 	}
 
-	// Clone the user to avoid race conditions when multiple goroutines update the same user
+	// Clone the user to avoid race conditions
 	userCopy := user.Clone()
 
-	// Update user password and reset login attempts
-	userCopy.Password = hashedPassword
+	// Update user authentication data and reset login attempts
+	userCopy.UpdateAuthenticationData(req.AuthenticationProvider, newAuthData)
 	userCopy.LoginAttempts = 0
 	userCopy.LockedUntil = nil
-	userCopy.UpdatedAt = time.Now()
 
 	// Save updated user
 	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
-		s.logger.Error("Failed to update user password",
+		s.logger.Error("Failed to update user credentials",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
 		counter := s.metrics.Counter(metrics.Options{
-			Name: "user_service.update_password.repository_error",
+			Name: "user_service.update_credentials.repository_error",
 		})
 		counter.Inc()
-		return errors.NewAppError(errors.CodeInternalError, "Failed to update password")
+		return errors.NewAppError(errors.CodeInternalError, "Failed to update credentials")
 	}
 
 	// Update cache
 	s.cacheUser(ctx, userCopy)
 
-	s.logger.Info("User password updated successfully", logger.Field{Key: "user_id", Value: userID})
+	s.logger.Info("User credentials updated successfully", logger.Field{Key: "user_id", Value: userID})
 	counter := s.metrics.Counter(metrics.Options{
-		Name: "user_service.update_password.success",
+		Name: "user_service.update_credentials.success",
 	})
 	counter.Inc()
 
