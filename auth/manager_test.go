@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/MichaelAJay/go-logger"
-	interfaces "github.com/MichaelAJay/go-user-management"
+	"github.com/MichaelAJay/go-metrics"
 	"github.com/MichaelAJay/go-user-management/errors"
 )
 
@@ -115,7 +115,7 @@ func NewMockMetrics() *MockMetrics {
 	}
 }
 
-func (m *MockMetrics) Counter(opts interfaces.Options) interfaces.Counter {
+func (m *MockMetrics) Counter(opts metrics.Options) metrics.Counter {
 	if counter, exists := m.counters[opts.Name]; exists {
 		return counter
 	}
@@ -124,7 +124,7 @@ func (m *MockMetrics) Counter(opts interfaces.Options) interfaces.Counter {
 	return counter
 }
 
-func (m *MockMetrics) Timer(opts interfaces.Options) interfaces.Timer {
+func (m *MockMetrics) Timer(opts metrics.Options) metrics.Timer {
 	if timer, exists := m.timers[opts.Name]; exists {
 		return timer
 	}
@@ -133,7 +133,7 @@ func (m *MockMetrics) Timer(opts interfaces.Options) interfaces.Timer {
 	return timer
 }
 
-func (m *MockMetrics) Gauge(opts interfaces.Options) interfaces.Gauge {
+func (m *MockMetrics) Gauge(opts metrics.Options) metrics.Gauge {
 	if gauge, exists := m.gauges[opts.Name]; exists {
 		return gauge
 	}
@@ -142,7 +142,7 @@ func (m *MockMetrics) Gauge(opts interfaces.Options) interfaces.Gauge {
 	return gauge
 }
 
-func (m *MockMetrics) Histogram(opts interfaces.Options) interfaces.Histogram {
+func (m *MockMetrics) Histogram(opts metrics.Options) metrics.Histogram {
 	if histogram, exists := m.histograms[opts.Name]; exists {
 		return histogram
 	}
@@ -158,7 +158,7 @@ func (m *MockMetrics) Unregister(name string) {
 	delete(m.histograms, name)
 }
 
-func (m *MockMetrics) Each(fn func(interfaces.Metric)) {
+func (m *MockMetrics) Each(fn func(metrics.Metric)) {
 	for _, counter := range m.counters {
 		fn(counter)
 	}
@@ -179,13 +179,13 @@ type MockCounter struct {
 	value float64
 }
 
-func (c *MockCounter) Inc()                                         { c.value++ }
-func (c *MockCounter) Add(value float64)                            { c.value += value }
-func (c *MockCounter) With(tags interfaces.Tags) interfaces.Counter { return c }
-func (c *MockCounter) Name() string                                 { return c.name }
-func (c *MockCounter) Description() string                          { return "" }
-func (c *MockCounter) Type() interfaces.Type                        { return "counter" }
-func (c *MockCounter) Tags() interfaces.Tags                        { return nil }
+func (c *MockCounter) Inc()                                   { c.value++ }
+func (c *MockCounter) Add(value float64)                      { c.value += value }
+func (c *MockCounter) With(tags metrics.Tags) metrics.Counter { return c }
+func (c *MockCounter) Name() string                           { return c.name }
+func (c *MockCounter) Description() string                    { return "" }
+func (c *MockCounter) Type() metrics.Type                     { return "counter" }
+func (c *MockCounter) Tags() metrics.Tags                     { return nil }
 
 type MockTimer struct {
 	name      string
@@ -201,38 +201,38 @@ func (t *MockTimer) Time(fn func()) time.Duration {
 	t.Record(duration)
 	return duration
 }
-func (t *MockTimer) With(tags interfaces.Tags) interfaces.Timer { return t }
-func (t *MockTimer) Name() string                               { return t.name }
-func (t *MockTimer) Description() string                        { return "" }
-func (t *MockTimer) Type() interfaces.Type                      { return "timer" }
-func (t *MockTimer) Tags() interfaces.Tags                      { return nil }
+func (t *MockTimer) With(tags metrics.Tags) metrics.Timer { return t }
+func (t *MockTimer) Name() string                         { return t.name }
+func (t *MockTimer) Description() string                  { return "" }
+func (t *MockTimer) Type() metrics.Type                   { return "timer" }
+func (t *MockTimer) Tags() metrics.Tags                   { return nil }
 
 type MockGauge struct {
 	name  string
 	value float64
 }
 
-func (g *MockGauge) Set(value float64)                          { g.value = value }
-func (g *MockGauge) Add(value float64)                          { g.value += value }
-func (g *MockGauge) Inc()                                       { g.value++ }
-func (g *MockGauge) Dec()                                       { g.value-- }
-func (g *MockGauge) With(tags interfaces.Tags) interfaces.Gauge { return g }
-func (g *MockGauge) Name() string                               { return g.name }
-func (g *MockGauge) Description() string                        { return "" }
-func (g *MockGauge) Type() interfaces.Type                      { return "gauge" }
-func (g *MockGauge) Tags() interfaces.Tags                      { return nil }
+func (g *MockGauge) Set(value float64)                    { g.value = value }
+func (g *MockGauge) Add(value float64)                    { g.value += value }
+func (g *MockGauge) Inc()                                 { g.value++ }
+func (g *MockGauge) Dec()                                 { g.value-- }
+func (g *MockGauge) With(tags metrics.Tags) metrics.Gauge { return g }
+func (g *MockGauge) Name() string                         { return g.name }
+func (g *MockGauge) Description() string                  { return "" }
+func (g *MockGauge) Type() metrics.Type                   { return "gauge" }
+func (g *MockGauge) Tags() metrics.Tags                   { return nil }
 
 type MockHistogram struct {
 	name   string
 	values []float64
 }
 
-func (h *MockHistogram) Observe(value float64)                          { h.values = append(h.values, value) }
-func (h *MockHistogram) With(tags interfaces.Tags) interfaces.Histogram { return h }
-func (h *MockHistogram) Name() string                                   { return h.name }
-func (h *MockHistogram) Description() string                            { return "" }
-func (h *MockHistogram) Type() interfaces.Type                          { return "histogram" }
-func (h *MockHistogram) Tags() interfaces.Tags                          { return nil }
+func (h *MockHistogram) Observe(value float64)                    { h.values = append(h.values, value) }
+func (h *MockHistogram) With(tags metrics.Tags) metrics.Histogram { return h }
+func (h *MockHistogram) Name() string                             { return h.name }
+func (h *MockHistogram) Description() string                      { return "" }
+func (h *MockHistogram) Type() metrics.Type                       { return "histogram" }
+func (h *MockHistogram) Tags() metrics.Tags                       { return nil }
 
 func TestNewManager(t *testing.T) {
 	logger := &MockLogger{}
