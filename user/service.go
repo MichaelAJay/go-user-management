@@ -258,6 +258,9 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	// Cache user data
 	s.cacheUser(ctx, user)
 
+	// Cache email mapping for faster email lookups
+	s.cacheEmailMapping(ctx, user.HashedEmail, user.ID)
+
 	s.logger.Info("User created successfully",
 		logger.Field{Key: "user_id", Value: user.ID},
 		logger.Field{Key: "email", Value: normalizedEmail})
@@ -575,6 +578,28 @@ func (s *userService) getCachedUser(ctx context.Context, userID string) *User {
 	return nil
 }
 
+// cacheEmailMapping stores email->userID mapping in cache for faster email lookups.
+func (s *userService) cacheEmailMapping(ctx context.Context, hashedEmail, userID string) {
+	config := &ServiceConfig{}
+	// Use same TTL as user cache
+	if ttlStr, ok := s.config.GetString("user_service.cache_user_ttl"); ok {
+		if parsed, err := time.ParseDuration(ttlStr); err == nil {
+			config.CacheUserTTL = parsed
+		} else {
+			config.CacheUserTTL = 15 * time.Minute
+		}
+	} else {
+		config.CacheUserTTL = 15 * time.Minute
+	}
+
+	key := fmt.Sprintf("user:email:%s", hashedEmail)
+	if err := s.cache.Set(ctx, key, userID, config.CacheUserTTL); err != nil {
+		s.logger.Warn("Failed to cache email mapping",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "hashed_email", Value: hashedEmail})
+	}
+}
+
 // GetUserByEmail retrieves a user by their email address.
 func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserResponse, error) {
 	startTime := time.Now()
@@ -596,6 +621,21 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 	// Hash email for lookup
 	hashedEmail := s.encrypter.HashLookupData([]byte(normalizedEmail))
 
+	// Try cache first using hashed email as secondary key
+	emailCacheKey := fmt.Sprintf("user:email:%s", string(hashedEmail))
+	if cached, _, err := s.cache.Get(ctx, emailCacheKey); err == nil {
+		if userID, ok := cached.(string); ok {
+			// Now get the full user from cache using the user ID
+			if user := s.getCachedUser(ctx, userID); user != nil {
+				counter := s.metrics.Counter(metrics.Options{
+					Name: "user_service.get_user_by_email.cache_hit",
+				})
+				counter.Inc()
+				return user.ToUserResponse(), nil // Read-only: use original safely
+			}
+		}
+	}
+
 	// Get from repository
 	user, err := s.repository.GetByHashedEmail(ctx, string(hashedEmail))
 	if err != nil {
@@ -612,14 +652,16 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
 	}
 
-	// Cache user
+	// Cache both the user and the email->userID mapping
 	s.cacheUser(ctx, user)
+	s.cacheEmailMapping(ctx, string(hashedEmail), user.ID)
+
 	counter := s.metrics.Counter(metrics.Options{
 		Name: "user_service.get_user_by_email.success",
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(), nil // Read-only: use original safely
 }
 
 // UpdateProfile updates user profile information.
@@ -756,6 +798,20 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 
 	// Update cache
 	s.cacheUser(ctx, userCopy)
+
+	// If email changed, invalidate old email mapping and cache new one
+	if emailChanged {
+		// Invalidate old email mapping
+		oldEmailKey := fmt.Sprintf("user:email:%s", user.HashedEmail)
+		if err := s.cache.Delete(ctx, oldEmailKey); err != nil {
+			s.logger.Warn("Failed to invalidate old email mapping",
+				logger.Field{Key: "error", Value: err.Error()},
+				logger.Field{Key: "user_id", Value: userID})
+		}
+
+		// Cache new email mapping
+		s.cacheEmailMapping(ctx, userCopy.HashedEmail, userCopy.ID)
+	}
 
 	s.logger.Info("User profile updated successfully",
 		logger.Field{Key: "user_id", Value: userID},
@@ -1429,6 +1485,14 @@ func (s *userService) DeleteUser(ctx context.Context, userID string) error {
 	cacheKey := fmt.Sprintf("user:%s", userID)
 	if err := s.cache.Delete(ctx, cacheKey); err != nil {
 		s.logger.Warn("Failed to remove user from cache",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+	}
+
+	// Remove email mapping from cache
+	emailCacheKey := fmt.Sprintf("user:email:%s", user.HashedEmail)
+	if err := s.cache.Delete(ctx, emailCacheKey); err != nil {
+		s.logger.Warn("Failed to remove email mapping from cache",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
 	}
