@@ -243,8 +243,8 @@ func TestNewManager(t *testing.T) {
 	if manager == nil {
 		t.Error("Expected manager to be created")
 	}
-	if manager.providers == nil {
-		t.Error("Expected providers map to be initialized")
+	if manager == nil {
+		t.Fatal("Expected providers map to be initialized")
 	}
 	if len(manager.providers) != 0 {
 		t.Error("Expected providers map to be empty initially")
@@ -366,7 +366,7 @@ func TestManager_Authenticate(t *testing.T) {
 		t.Errorf("Expected no error during authentication, got %v", err)
 	}
 	if result == nil {
-		t.Error("Expected authentication result")
+		t.Fatal("Expected authentication result")
 	}
 	if result.UserID != expectedResult.UserID {
 		t.Errorf("Expected UserID %s, got %s", expectedResult.UserID, result.UserID)
