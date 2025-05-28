@@ -166,13 +166,23 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		return nil, err
 	}
 
+	// Convert credentials to proper type for the provider
+	convertedCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.Credentials)
+	if err != nil {
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.create_user.credential_conversion_error",
+		})
+		counter.Inc()
+		return nil, err
+	}
+
 	// Validate credentials using authentication manager
 	userInfo := &auth.UserInfo{
 		FirstName: req.FirstName,
 		LastName:  req.LastName,
 		Email:     normalizedEmail,
 	}
-	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, req.Credentials, userInfo); err != nil {
+	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, convertedCredentials, userInfo); err != nil {
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.create_user.credential_validation_error",
 		})
@@ -215,7 +225,7 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	}
 
 	// Prepare credentials for storage using authentication manager
-	authData, err := s.authManager.PrepareCredentials(ctx, req.AuthenticationProvider, req.Credentials)
+	authData, err := s.authManager.PrepareCredentials(ctx, req.AuthenticationProvider, convertedCredentials)
 	if err != nil {
 		s.logger.Error("Failed to prepare credentials", logger.Field{Key: "error", Value: err.Error()})
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process credentials")
@@ -329,20 +339,27 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		return nil, errors.NewInvalidCredentialsError()
 	}
 
+	// Convert credentials to proper type for the provider
+	convertedCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.Credentials)
+	if err != nil {
+		s.logger.Error("Failed to convert credentials", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewInvalidCredentialsError()
+	}
+
 	// For password provider, we need to verify the password directly
-	// This is a temporary solution until we refactor the provider interface
 	var valid bool
 	if req.AuthenticationProvider == auth.ProviderTypePassword {
 		// Type assert to password provider and verify
 		if passwordProvider, ok := provider.(*password.Provider); ok {
-			valid, err = passwordProvider.VerifyPassword(ctx, storedAuthData, req.Credentials.(string))
+			passwordCreds := convertedCredentials.(*password.PasswordCredentials)
+			valid, err = passwordProvider.VerifyPassword(ctx, storedAuthData, passwordCreds.Password)
 		} else {
 			s.logger.Error("Invalid password provider type")
 			return nil, errors.NewInvalidCredentialsError()
 		}
 	} else {
 		// For other providers, use the standard authenticate method
-		_, err = provider.Authenticate(ctx, normalizedEmail, req.Credentials)
+		_, err = provider.Authenticate(ctx, normalizedEmail, convertedCredentials)
 		valid = err == nil
 	}
 
@@ -902,6 +919,25 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot update credentials for deactivated user")
 	}
 
+	// Convert credentials to proper types for the provider
+	convertedCurrentCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.CurrentCredentials)
+	if err != nil {
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.update_credentials.credential_conversion_error",
+		})
+		counter.Inc()
+		return err
+	}
+
+	convertedNewCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.NewCredentials)
+	if err != nil {
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.update_credentials.credential_conversion_error",
+		})
+		counter.Inc()
+		return err
+	}
+
 	// Validate new credentials using authentication manager
 	// Get decrypted user info for validation
 	decryptedFirstName, err := s.encrypter.Decrypt(user.FirstName)
@@ -930,7 +966,7 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		CreatedAt: user.CreatedAt,
 	}
 
-	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, req.NewCredentials, userInfo); err != nil {
+	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, convertedNewCredentials, userInfo); err != nil {
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.update_credentials.weak_credentials",
 		})
@@ -941,8 +977,8 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 	// Use authentication manager to update credentials
 	credentialUpdateReq := &auth.CredentialUpdateRequest{
 		UserID:         userID,
-		OldCredentials: req.CurrentCredentials,
-		NewCredentials: req.NewCredentials,
+		OldCredentials: convertedCurrentCredentials,
+		NewCredentials: convertedNewCredentials,
 		ProviderType:   req.AuthenticationProvider,
 	}
 
@@ -1528,4 +1564,53 @@ func (s *userService) DeleteUser(ctx context.Context, userID string) error {
 	counter.Inc()
 
 	return nil
+}
+
+// convertCredentials converts map-based credentials to provider-specific credential types.
+// This follows the Adapter pattern to convert between different credential representations.
+func (s *userService) convertCredentials(providerType auth.ProviderType, credentials interface{}) (interface{}, error) {
+	// If credentials are already the correct type, return as-is
+	if credentials == nil {
+		return nil, errors.NewValidationError("credentials", "credentials cannot be nil")
+	}
+
+	// Handle map-based credentials (from API requests)
+	credMap, ok := credentials.(map[string]interface{})
+	if !ok {
+		// If not a map, assume it's already the correct type
+		return credentials, nil
+	}
+
+	switch providerType {
+	case auth.ProviderTypePassword:
+		passwordValue, exists := credMap["password"]
+		if !exists {
+			return nil, errors.NewValidationError("credentials", "password field is required for password provider")
+		}
+		passwordStr, ok := passwordValue.(string)
+		if !ok {
+			return nil, errors.NewValidationError("credentials", "password must be a string")
+		}
+		return &password.PasswordCredentials{
+			Password: passwordStr,
+		}, nil
+
+	case auth.ProviderTypeOAuth:
+		// Handle OAuth credentials conversion
+		// This would be implemented when OAuth provider is added
+		return nil, errors.NewValidationError("provider_type", "OAuth provider not yet implemented")
+
+	case auth.ProviderTypeGoogle:
+		// Handle Google OAuth credentials conversion
+		// This would be implemented when Google provider is added
+		return nil, errors.NewValidationError("provider_type", "Google provider not yet implemented")
+
+	case auth.ProviderTypeAuth0:
+		// Handle Auth0 credentials conversion
+		// This would be implemented when Auth0 provider is added
+		return nil, errors.NewValidationError("provider_type", "Auth0 provider not yet implemented")
+
+	default:
+		return nil, errors.NewValidationError("provider_type", fmt.Sprintf("unsupported provider type: %s", providerType))
+	}
 }

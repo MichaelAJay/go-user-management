@@ -3,6 +3,8 @@ package user
 import (
 	"time"
 
+	"maps"
+
 	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
 	"github.com/google/uuid"
@@ -74,7 +76,7 @@ type User struct {
 
 	// AuthenticationData stores provider-specific authentication data
 	// This replaces the Password field to support multiple authentication providers
-	AuthenticationData map[auth.ProviderType]interface{} `json:"-"` // Hidden from JSON serialization for security
+	AuthenticationData map[auth.ProviderType]any `json:"-"` // Hidden from JSON serialization for security
 
 	// PrimaryAuthProvider indicates the primary authentication provider for this user
 	PrimaryAuthProvider auth.ProviderType `json:"primary_auth_provider"`
@@ -107,10 +109,10 @@ type User struct {
 
 // NewUser creates a new User instance with required fields
 // Returns a User with a new UUID and default values
-func NewUser(firstName, lastName, email, hashedEmail string, primaryProvider auth.ProviderType, authData interface{}) *User {
+func NewUser(firstName, lastName, email, hashedEmail string, primaryProvider auth.ProviderType, authData any) *User {
 	now := time.Now()
 
-	authenticationData := make(map[auth.ProviderType]interface{})
+	authenticationData := make(map[auth.ProviderType]any)
 	authenticationData[primaryProvider] = authData
 
 	return &User{
@@ -157,8 +159,8 @@ func (u *User) CanAuthenticate() bool {
 	return u.Status.CanAuthenticate() && !u.IsLocked()
 }
 
-// IncrementLoginAttempts increments the login attempt counter
-// This method is used when a login attempt fails
+// IncrementLoginAttempts increments the login attempt counter.
+// This method is used when a login attempt fails.
 func (u *User) IncrementLoginAttempts() {
 	u.LoginAttempts++
 	u.UpdatedAt = time.Now()
@@ -174,8 +176,8 @@ func (u *User) ResetLoginAttempts() {
 	u.Version++
 }
 
-// LockAccount locks the user account until the specified time
-// If duration is 0, the account is locked indefinitely (status becomes locked)
+// LockAccount locks the user account until the specified time.
+// If until is nil, the account is locked indefinitely (status becomes locked).
 func (u *User) LockAccount(until *time.Time) {
 	if until == nil {
 		// Permanent lock - change status
@@ -197,8 +199,8 @@ func (u *User) UnlockAccount() {
 	u.ResetLoginAttempts()
 }
 
-// UpdateLastLogin updates the last login timestamp
-// This should be called when a user successfully authenticates
+// UpdateLastLogin updates the last login timestamp.
+// This should be called when a user successfully authenticates.
 func (u *User) UpdateLastLogin() {
 	now := time.Now()
 	u.LastLoginAt = &now
@@ -206,8 +208,9 @@ func (u *User) UpdateLastLogin() {
 	u.Version++
 }
 
-// Activate activates the user account
-// This is typically called after email verification
+// Activate activates the user account in memory.
+// Note: This method only updates the entity state. Use UserRepository.UpdateStatus()
+// for atomic persistence, or call UserRepository.Update() after this method.
 func (u *User) Activate() {
 	u.Status = UserStatusActive
 	u.UpdatedAt = time.Now()
@@ -237,9 +240,9 @@ func (u *User) UpdateProfile() {
 
 // UpdateAuthenticationData updates the user's authentication data for a specific provider
 // This method also increments the version for optimistic locking
-func (u *User) UpdateAuthenticationData(providerType auth.ProviderType, authData interface{}) {
+func (u *User) UpdateAuthenticationData(providerType auth.ProviderType, authData any) {
 	if u.AuthenticationData == nil {
-		u.AuthenticationData = make(map[auth.ProviderType]interface{})
+		u.AuthenticationData = make(map[auth.ProviderType]any)
 	}
 	u.AuthenticationData[providerType] = authData
 	u.UpdatedAt = time.Now()
@@ -247,7 +250,7 @@ func (u *User) UpdateAuthenticationData(providerType auth.ProviderType, authData
 }
 
 // GetAuthenticationData returns the authentication data for a specific provider
-func (u *User) GetAuthenticationData(providerType auth.ProviderType) (interface{}, bool) {
+func (u *User) GetAuthenticationData(providerType auth.ProviderType) (any, bool) {
 	if u.AuthenticationData == nil {
 		return nil, false
 	}
@@ -262,9 +265,9 @@ func (u *User) HasAuthenticationProvider(providerType auth.ProviderType) bool {
 }
 
 // AddAuthenticationProvider adds a new authentication provider to the user
-func (u *User) AddAuthenticationProvider(providerType auth.ProviderType, authData interface{}) {
+func (u *User) AddAuthenticationProvider(providerType auth.ProviderType, authData any) {
 	if u.AuthenticationData == nil {
-		u.AuthenticationData = make(map[auth.ProviderType]interface{})
+		u.AuthenticationData = make(map[auth.ProviderType]any)
 	}
 	u.AuthenticationData[providerType] = authData
 	u.UpdatedAt = time.Now()
@@ -313,10 +316,8 @@ func (u *User) Clone() *User {
 
 	// Deep copy authentication data map
 	if u.AuthenticationData != nil {
-		clone.AuthenticationData = make(map[auth.ProviderType]interface{})
-		for k, v := range u.AuthenticationData {
-			clone.AuthenticationData[k] = v
-		}
+		clone.AuthenticationData = make(map[auth.ProviderType]any)
+		maps.Copy(clone.AuthenticationData, u.AuthenticationData)
 	}
 
 	// Deep copy time pointers
@@ -345,7 +346,7 @@ func (u *User) Validate() error {
 		return errors.ErrInvalidEmail
 	}
 
-	if u.AuthenticationData == nil || len(u.AuthenticationData) == 0 {
+	if len(u.AuthenticationData) == 0 {
 		return errors.ErrInvalidPassword
 	}
 
