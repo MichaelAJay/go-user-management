@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
@@ -16,7 +17,7 @@ func TestCreateUser_Validation(t *testing.T) {
 		name    string
 		req     *CreateUserRequest
 		wantErr bool
-		errCode string
+		errCode errors.ErrorCode
 	}{
 		{
 			name: "valid request",
@@ -33,7 +34,7 @@ func TestCreateUser_Validation(t *testing.T) {
 			name:    "nil request",
 			req:     nil,
 			wantErr: true,
-			errCode: errors.CodeValidationError,
+			errCode: errors.CodeValidationFailed,
 		},
 		{
 			name: "empty first name",
@@ -45,7 +46,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
 			},
 			wantErr: true,
-			errCode: errors.CodeValidationError,
+			errCode: errors.CodeEmptyField,
 		},
 		{
 			name: "invalid email format",
@@ -57,7 +58,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
 			},
 			wantErr: true,
-			errCode: errors.CodeValidationError,
+			errCode: errors.CodeInvalidEmailFormat,
 		},
 		{
 			name: "missing credentials",
@@ -69,7 +70,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				Credentials:            nil,
 			},
 			wantErr: true,
-			errCode: errors.CodeValidationError,
+			errCode: errors.CodeMissingCredentials,
 		},
 		{
 			name: "unsupported auth provider",
@@ -81,7 +82,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
 			},
 			wantErr: true,
-			errCode: errors.CodeValidationError,
+			errCode: errors.CodeUnsupportedProvider,
 		},
 	}
 
@@ -196,7 +197,7 @@ func TestAuthenticateUser_Comprehensive(t *testing.T) {
 		email       string
 		password    string
 		wantErr     bool
-		expectedErr string
+		expectedErr errors.ErrorCode
 	}{
 		{
 			name:     "valid credentials",
@@ -223,7 +224,7 @@ func TestAuthenticateUser_Comprehensive(t *testing.T) {
 			email:       "not-an-email",
 			password:    "StrongPass123!",
 			wantErr:     true,
-			expectedErr: errors.CodeValidationError,
+			expectedErr: errors.CodeInvalidEmailFormat,
 		},
 	}
 
@@ -479,6 +480,63 @@ func TestCreateUser_RepositoryErrors(t *testing.T) {
 	var appErr *errors.AppError
 	if errors.As(err, &appErr) && appErr.Code != errors.CodeInternalError {
 		t.Errorf("Expected internal error, got %s", appErr.Code)
+	}
+}
+
+// Mock repository for testing
+type mockRepository struct {
+	createFunc func(context.Context, *User) error
+}
+
+func (m *mockRepository) Create(ctx context.Context, user *User) error {
+	if m.createFunc != nil {
+		return m.createFunc(ctx, user)
+	}
+	return nil
+}
+
+func (m *mockRepository) GetByHashedEmail(ctx context.Context, hashedEmail string) (*User, error) {
+	return nil, errors.ErrUserNotFound
+}
+
+func (m *mockRepository) GetByID(ctx context.Context, id string) (*User, error) {
+	return nil, errors.ErrUserNotFound
+}
+
+func (m *mockRepository) Update(ctx context.Context, user *User) error {
+	return nil
+}
+
+func (m *mockRepository) Delete(ctx context.Context, id string) error {
+	return nil
+}
+
+func (m *mockRepository) ListUsers(ctx context.Context, offset, limit int) ([]*User, int64, error) {
+	return nil, 0, nil
+}
+
+func (m *mockRepository) GetUserStats(ctx context.Context) (*UserStats, error) {
+	return nil, nil
+}
+
+func (m *mockRepository) IncrementLoginAttempts(ctx context.Context, hashedEmail string) error {
+	return nil
+}
+
+func (m *mockRepository) ResetLoginAttempts(ctx context.Context, hashedEmail string) error {
+	return nil
+}
+
+func (m *mockRepository) LockAccount(ctx context.Context, hashedEmail string, until *time.Time) error {
+	return nil
+}
+
+// Test helper function to create a test service
+func createTestUserService() UserService {
+	// This is a simplified mock service for testing
+	// In a real implementation, you would set up proper mocks
+	return &userService{
+		repository: &mockRepository{},
 	}
 }
 
