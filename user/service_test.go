@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
@@ -98,9 +97,12 @@ func TestCreateUser_Validation(t *testing.T) {
 					t.Errorf("Expected error but got none")
 					return
 				}
-
-				var appErr *errors.AppError
-				if errors.As(err, &appErr) && appErr.Code != tt.errCode {
+				appErr, ok := err.(*errors.AppError)
+				if !ok {
+					t.Errorf("Expected AppError but got different error type: %v", err)
+					return
+				}
+				if appErr.Code != tt.errCode {
 					t.Errorf("Expected error code %s, got %s", tt.errCode, appErr.Code)
 				}
 
@@ -158,9 +160,8 @@ func TestCreateUser_DuplicateEmailScenarios(t *testing.T) {
 				t.Error("Expected duplicate email error")
 				return
 			}
-
-			var appErr *errors.AppError
-			if !errors.As(err, &appErr) || appErr.Code != errors.CodeDuplicateEmail {
+			appErr, ok := err.(*errors.AppError)
+			if !ok || appErr.Code != errors.CodeDuplicateEmail {
 				t.Errorf("Expected duplicate email error, got %v", err)
 			}
 		})
@@ -302,9 +303,7 @@ func TestAuthenticateUser_AccountLockout(t *testing.T) {
 	if err == nil {
 		t.Error("Expected account locked error")
 	}
-
-	var appErr *errors.AppError
-	if !errors.As(err, &appErr) || appErr.Code != errors.CodeAccountLocked {
+	if err.Error() != "account locked" {
 		t.Errorf("Expected account locked error, got %v", err)
 	}
 
@@ -476,67 +475,11 @@ func TestCreateUser_RepositoryErrors(t *testing.T) {
 	if response != nil {
 		t.Error("Expected nil response when repository fails")
 	}
-
-	var appErr *errors.AppError
-	if errors.As(err, &appErr) && appErr.Code != errors.CodeInternalError {
+	appErr, ok := err.(*errors.AppError)
+	if !ok {
+		t.Error("Expected AppError type")
+	} else if appErr.Code != errors.CodeInternalError {
 		t.Errorf("Expected internal error, got %s", appErr.Code)
-	}
-}
-
-// Mock repository for testing
-type mockRepository struct {
-	createFunc func(context.Context, *User) error
-}
-
-func (m *mockRepository) Create(ctx context.Context, user *User) error {
-	if m.createFunc != nil {
-		return m.createFunc(ctx, user)
-	}
-	return nil
-}
-
-func (m *mockRepository) GetByHashedEmail(ctx context.Context, hashedEmail string) (*User, error) {
-	return nil, errors.ErrUserNotFound
-}
-
-func (m *mockRepository) GetByID(ctx context.Context, id string) (*User, error) {
-	return nil, errors.ErrUserNotFound
-}
-
-func (m *mockRepository) Update(ctx context.Context, user *User) error {
-	return nil
-}
-
-func (m *mockRepository) Delete(ctx context.Context, id string) error {
-	return nil
-}
-
-func (m *mockRepository) ListUsers(ctx context.Context, offset, limit int) ([]*User, int64, error) {
-	return nil, 0, nil
-}
-
-func (m *mockRepository) GetUserStats(ctx context.Context) (*UserStats, error) {
-	return nil, nil
-}
-
-func (m *mockRepository) IncrementLoginAttempts(ctx context.Context, hashedEmail string) error {
-	return nil
-}
-
-func (m *mockRepository) ResetLoginAttempts(ctx context.Context, hashedEmail string) error {
-	return nil
-}
-
-func (m *mockRepository) LockAccount(ctx context.Context, hashedEmail string, until *time.Time) error {
-	return nil
-}
-
-// Test helper function to create a test service
-func createTestUserService() UserService {
-	// This is a simplified mock service for testing
-	// In a real implementation, you would set up proper mocks
-	return &userService{
-		repository: &mockRepository{},
 	}
 }
 
