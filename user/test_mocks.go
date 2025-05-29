@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/MichaelAJay/go-cache"
+	"github.com/MichaelAJay/go-config"
 	"github.com/MichaelAJay/go-logger"
 	"github.com/MichaelAJay/go-metrics"
 	"github.com/MichaelAJay/go-user-management/auth"
@@ -219,12 +221,38 @@ func (m *mockEncrypter) Encrypt(data []byte) ([]byte, error) {
 	return append([]byte("encrypted:"), data...), nil
 }
 
+func (m *mockEncrypter) EncryptWithAAD(data, additionalData []byte) ([]byte, error) {
+	// Simple mock encryption with AAD - just return the data with prefix
+	return append([]byte("encrypted:"), data...), nil
+}
+
 func (m *mockEncrypter) Decrypt(encryptedData []byte) ([]byte, error) {
 	// Simple mock decryption - remove prefix
 	if len(encryptedData) < 10 || string(encryptedData[:10]) != "encrypted:" {
 		return nil, errors.NewAppError(errors.CodeInternalError, "invalid encrypted data")
 	}
 	return encryptedData[10:], nil
+}
+
+func (m *mockEncrypter) DecryptWithAAD(encryptedData, additionalData []byte) ([]byte, error) {
+	// Simple mock decryption with AAD - remove prefix
+	if len(encryptedData) < 10 || string(encryptedData[:10]) != "encrypted:" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "invalid encrypted data")
+	}
+	return encryptedData[10:], nil
+}
+
+func (m *mockEncrypter) HashPassword(password []byte) ([]byte, error) {
+	// Simple mock hashing - just return data with hash prefix
+	return append([]byte("hash:"), password...), nil
+}
+
+func (m *mockEncrypter) VerifyPassword(hashedPassword, password []byte) (bool, error) {
+	// Simple mock verification - check against stored password
+	if string(hashedPassword) == "hash:password" && string(password) == "password" {
+		return true, nil
+	}
+	return false, nil
 }
 
 func (m *mockEncrypter) HashLookupData(data []byte) []byte {
@@ -235,10 +263,17 @@ func (m *mockEncrypter) HashLookupData(data []byte) []byte {
 // Mock Logger Implementation
 type mockLogger struct{}
 
+func (m *mockLogger) Debug(msg string, fields ...logger.Field) {}
 func (m *mockLogger) Info(msg string, fields ...logger.Field)  {}
 func (m *mockLogger) Warn(msg string, fields ...logger.Field)  {}
 func (m *mockLogger) Error(msg string, fields ...logger.Field) {}
-func (m *mockLogger) Debug(msg string, fields ...logger.Field) {}
+func (m *mockLogger) Fatal(msg string, fields ...logger.Field) {}
+func (m *mockLogger) With(fields ...logger.Field) logger.Logger {
+	return m
+}
+func (m *mockLogger) WithContext(ctx context.Context) logger.Logger {
+	return m
+}
 
 // Mock Cache Implementation
 type mockCache struct {
@@ -251,11 +286,11 @@ func newMockCache() *mockCache {
 	}
 }
 
-func (m *mockCache) Get(ctx context.Context, key string) (interface{}, time.Duration, error) {
+func (m *mockCache) Get(ctx context.Context, key string) (any, bool, error) {
 	if val, exists := m.data[key]; exists {
-		return val, time.Hour, nil
+		return val, true, nil
 	}
-	return nil, 0, errors.ErrCacheMiss
+	return nil, false, errors.ErrCacheMiss
 }
 
 func (m *mockCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
@@ -265,6 +300,64 @@ func (m *mockCache) Set(ctx context.Context, key string, value interface{}, ttl 
 
 func (m *mockCache) Delete(ctx context.Context, key string) error {
 	delete(m.data, key)
+	return nil
+}
+
+func (m *mockCache) Clear(ctx context.Context) error {
+	m.data = make(map[string]interface{})
+	return nil
+}
+
+func (m *mockCache) Has(ctx context.Context, key string) bool {
+	_, exists := m.data[key]
+	return exists
+}
+
+func (m *mockCache) GetKeys(ctx context.Context) []string {
+	keys := make([]string, 0, len(m.data))
+	for key := range m.data {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
+func (m *mockCache) Close() error {
+	return nil
+}
+
+func (m *mockCache) GetMany(ctx context.Context, keys []string) (map[string]interface{}, error) {
+	values := make(map[string]interface{}, len(keys))
+	for _, key := range keys {
+		if val, exists := m.data[key]; exists {
+			values[key] = val
+		}
+	}
+	return values, nil
+}
+
+func (m *mockCache) SetMany(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
+	for key, value := range items {
+		m.data[key] = value
+	}
+	return nil
+}
+
+func (m *mockCache) DeleteMany(ctx context.Context, keys []string) error {
+	for _, key := range keys {
+		delete(m.data, key)
+	}
+	return nil
+}
+
+func (m *mockCache) GetMetadata(ctx context.Context, key string) (*cache.CacheEntryMetadata, error) {
+	return nil, nil
+}
+
+func (m *mockCache) GetManyMetadata(ctx context.Context, keys []string) (map[string]*cache.CacheEntryMetadata, error) {
+	return nil, nil
+}
+
+func (m *mockCache) GetMetrics() *cache.CacheMetricsSnapshot {
 	return nil
 }
 
@@ -285,6 +378,13 @@ func newMockConfig() *mockConfig {
 			"user_service.rate_limit_max_attempts": 10,
 		},
 	}
+}
+
+func (m *mockConfig) Get(key string) (any, bool) {
+	if val, exists := m.values[key]; exists {
+		return val, true
+	}
+	return nil, false
 }
 
 func (m *mockConfig) GetString(key string) (string, bool) {
@@ -314,16 +414,91 @@ func (m *mockConfig) GetBool(key string) (bool, bool) {
 	return false, false
 }
 
+func (m *mockConfig) GetFloat(key string) (float64, bool) {
+	if val, exists := m.values[key]; exists {
+		if f, ok := val.(float64); ok {
+			return f, true
+		}
+	}
+	return 0, false
+}
+
+func (m *mockConfig) GetStringSlice(key string) ([]string, bool) {
+	if val, exists := m.values[key]; exists {
+		if ss, ok := val.([]string); ok {
+			return ss, true
+		}
+	}
+	return nil, false
+}
+
+func (m *mockConfig) Set(key string, value any) error {
+	m.values[key] = value
+	return nil
+}
+
+func (m *mockConfig) Load(source config.Source) error {
+	return nil
+}
+
+func (m *mockConfig) Validate() error {
+	return nil
+}
+
 // Mock Metrics Implementation
 type mockMetrics struct{}
 type mockTimer struct{}
 type mockCounter struct{}
+type mockGauge struct{}
+type mockHistogram struct{}
 
-func (m *mockMetrics) Timer(opts metrics.Options) metrics.Timer     { return &mockTimer{} }
+func (m *mockMetrics) Tags() metrics.Tags                           { return metrics.Tags{} }
+func (m *mockMetrics) Registry() metrics.Registry                   { return m }
 func (m *mockMetrics) Counter(opts metrics.Options) metrics.Counter { return &mockCounter{} }
+func (m *mockMetrics) Gauge(opts metrics.Options) metrics.Gauge     { return &mockGauge{} }
+func (m *mockMetrics) Histogram(opts metrics.Options) metrics.Histogram {
+	return &mockHistogram{}
+}
+func (m *mockMetrics) Timer(opts metrics.Options) metrics.Timer { return &mockTimer{} }
+func (m *mockMetrics) Each(fn func(metrics.Metric))             {}
+func (m *mockMetrics) Unregister(name string)                   {}
 
-func (m *mockTimer) RecordSince(start time.Time) {}
-func (m *mockCounter) Inc()                      {}
+func (m *mockCounter) Name() string                           { return "mock counter" }
+func (m *mockCounter) Description() string                    { return "mock counter" }
+func (m *mockCounter) Type() metrics.Type                     { return metrics.TypeCounter }
+func (m *mockCounter) Tags() metrics.Tags                     { return metrics.Tags{} }
+func (m *mockCounter) Inc()                                   {}
+func (m *mockCounter) Add(float64)                            {}
+func (m *mockCounter) With(tags metrics.Tags) metrics.Counter { return m }
+
+func (m *mockGauge) Name() string                         { return "mock gauge" }
+func (m *mockGauge) Description() string                  { return "mock gauge" }
+func (m *mockGauge) Type() metrics.Type                   { return metrics.TypeGauge }
+func (m *mockGauge) Tags() metrics.Tags                   { return metrics.Tags{} }
+func (m *mockGauge) Set(float64)                          {}
+func (m *mockGauge) Add(float64)                          {}
+func (m *mockGauge) Inc()                                 {}
+func (m *mockGauge) Dec()                                 {}
+func (m *mockGauge) With(tags metrics.Tags) metrics.Gauge { return m }
+
+func (m *mockHistogram) Name() string                             { return "mock histogram" }
+func (m *mockHistogram) Description() string                      { return "mock histogram" }
+func (m *mockHistogram) Type() metrics.Type                       { return metrics.TypeHistogram }
+func (m *mockHistogram) Tags() metrics.Tags                       { return metrics.Tags{} }
+func (m *mockHistogram) Record(float64)                           {}
+func (m *mockHistogram) RecordSince(start time.Time)              {}
+func (m *mockHistogram) Time(fn func()) time.Duration             { return time.Duration(0) }
+func (m *mockHistogram) Observe(float64)                          {}
+func (m *mockHistogram) With(tags metrics.Tags) metrics.Histogram { return m }
+
+func (m *mockTimer) Name() string                         { return "mock timer" }
+func (m *mockTimer) Description() string                  { return "mock timer" }
+func (m *mockTimer) Type() metrics.Type                   { return metrics.TypeTimer }
+func (m *mockTimer) Tags() metrics.Tags                   { return metrics.Tags{} }
+func (m *mockTimer) Record(start time.Duration)           {}
+func (m *mockTimer) RecordSince(start time.Time)          {}
+func (m *mockTimer) Time(fn func()) time.Duration         { return time.Duration(0) }
+func (m *mockTimer) With(tags metrics.Tags) metrics.Timer { return m }
 
 // Mock Auth Manager Implementation
 type mockAuthManager struct{}
