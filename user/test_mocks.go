@@ -1,0 +1,444 @@
+package user
+
+import (
+	"context"
+	"time"
+
+	"github.com/MichaelAJay/go-logger"
+	"github.com/MichaelAJay/go-metrics"
+	"github.com/MichaelAJay/go-user-management/auth"
+	"github.com/MichaelAJay/go-user-management/auth/providers/password"
+	"github.com/MichaelAJay/go-user-management/errors"
+)
+
+// Test helper functions (consolidating from existing test files)
+
+func createTestUser() *User {
+	return NewUser(
+		"John",
+		"Doe",
+		"john.doe@example.com",
+		"hashed_email",
+		auth.ProviderTypePassword,
+		map[string]interface{}{"password": "hashed_password"},
+	)
+}
+
+func stringPtr(s string) *string {
+	return &s
+}
+
+func timePtr(t time.Time) *time.Time {
+	return &t
+}
+
+// Mock Repository Implementation
+type mockRepository struct {
+	users          map[string]*User
+	emailIndex     map[string]string // hashedEmail -> userID
+	createFunc     func(context.Context, *User) error
+	updateFunc     func(context.Context, *User) error
+	getByIDFunc    func(context.Context, string) (*User, error)
+	getByEmailFunc func(context.Context, string) (*User, error)
+}
+
+func newMockRepository() *mockRepository {
+	return &mockRepository{
+		users:      make(map[string]*User),
+		emailIndex: make(map[string]string),
+	}
+}
+
+func (m *mockRepository) Create(ctx context.Context, user *User) error {
+	if m.createFunc != nil {
+		return m.createFunc(ctx, user)
+	}
+
+	// Check for duplicate email
+	if _, exists := m.emailIndex[user.HashedEmail]; exists {
+		return errors.NewDuplicateEmailError("email already exists")
+	}
+
+	m.users[user.ID] = user.Clone()
+	m.emailIndex[user.HashedEmail] = user.ID
+	return nil
+}
+
+func (m *mockRepository) GetByHashedEmail(ctx context.Context, hashedEmail string) (*User, error) {
+	if m.getByEmailFunc != nil {
+		return m.getByEmailFunc(ctx, hashedEmail)
+	}
+
+	userID, exists := m.emailIndex[hashedEmail]
+	if !exists {
+		return nil, errors.ErrUserNotFound
+	}
+	user, exists := m.users[userID]
+	if !exists {
+		return nil, errors.ErrUserNotFound
+	}
+	return user.Clone(), nil
+}
+
+func (m *mockRepository) GetByID(ctx context.Context, id string) (*User, error) {
+	if m.getByIDFunc != nil {
+		return m.getByIDFunc(ctx, id)
+	}
+
+	user, exists := m.users[id]
+	if !exists {
+		return nil, errors.ErrUserNotFound
+	}
+	return user.Clone(), nil
+}
+
+func (m *mockRepository) Update(ctx context.Context, user *User) error {
+	if m.updateFunc != nil {
+		return m.updateFunc(ctx, user)
+	}
+
+	existing, exists := m.users[user.ID]
+	if !exists {
+		return errors.ErrUserNotFound
+	}
+
+	// Check version for optimistic locking
+	if existing.Version != user.Version-1 {
+		return errors.ErrVersionMismatch
+	}
+
+	// Update email index if email changed
+	if existing.HashedEmail != user.HashedEmail {
+		delete(m.emailIndex, existing.HashedEmail)
+		m.emailIndex[user.HashedEmail] = user.ID
+	}
+
+	m.users[user.ID] = user.Clone()
+	return nil
+}
+
+func (m *mockRepository) Delete(ctx context.Context, id string) error {
+	user, exists := m.users[id]
+	if !exists {
+		return errors.ErrUserNotFound
+	}
+
+	delete(m.users, id)
+	delete(m.emailIndex, user.HashedEmail)
+	return nil
+}
+
+func (m *mockRepository) UpdateLoginAttempts(ctx context.Context, hashedEmail string, attempts int) error {
+	userID, exists := m.emailIndex[hashedEmail]
+	if !exists {
+		return errors.ErrUserNotFound
+	}
+	user := m.users[userID]
+	user.LoginAttempts = attempts
+	user.UpdatedAt = time.Now()
+	user.Version++
+	return nil
+}
+
+func (m *mockRepository) ResetLoginAttempts(ctx context.Context, hashedEmail string) error {
+	userID, exists := m.emailIndex[hashedEmail]
+	if !exists {
+		return errors.ErrUserNotFound
+	}
+	user := m.users[userID]
+	user.LoginAttempts = 0
+	user.LockedUntil = nil
+	user.UpdatedAt = time.Now()
+	user.Version++
+	return nil
+}
+
+func (m *mockRepository) LockAccount(ctx context.Context, hashedEmail string, until *time.Time) error {
+	userID, exists := m.emailIndex[hashedEmail]
+	if !exists {
+		return errors.ErrUserNotFound
+	}
+	user := m.users[userID]
+	user.LockAccount(until)
+	return nil
+}
+
+func (m *mockRepository) ListUsers(ctx context.Context, offset, limit int) ([]*User, int64, error) {
+	users := make([]*User, 0, len(m.users))
+	for _, user := range m.users {
+		users = append(users, user.Clone())
+	}
+
+	total := int64(len(users))
+	start := offset
+	end := offset + limit
+
+	if start >= len(users) {
+		return []*User{}, total, nil
+	}
+	if end > len(users) {
+		end = len(users)
+	}
+
+	return users[start:end], total, nil
+}
+
+func (m *mockRepository) GetUserStats(ctx context.Context) (*UserStats, error) {
+	stats := &UserStats{
+		TotalUsers:               int64(len(m.users)),
+		ActiveUsers:              0,
+		PendingVerificationUsers: 0,
+		SuspendedUsers:           0,
+		LockedUsers:              0,
+		DeactivatedUsers:         0,
+	}
+
+	for _, user := range m.users {
+		switch user.Status {
+		case UserStatusActive:
+			stats.ActiveUsers++
+		case UserStatusPendingVerification:
+			stats.PendingVerificationUsers++
+		case UserStatusSuspended:
+			stats.SuspendedUsers++
+		case UserStatusLocked:
+			stats.LockedUsers++
+		case UserStatusDeactivated:
+			stats.DeactivatedUsers++
+		}
+	}
+
+	return stats, nil
+}
+
+// Mock Encrypter Implementation
+type mockEncrypter struct{}
+
+func (m *mockEncrypter) Encrypt(data []byte) ([]byte, error) {
+	// Simple mock encryption - just return the data with prefix
+	return append([]byte("encrypted:"), data...), nil
+}
+
+func (m *mockEncrypter) Decrypt(encryptedData []byte) ([]byte, error) {
+	// Simple mock decryption - remove prefix
+	if len(encryptedData) < 10 || string(encryptedData[:10]) != "encrypted:" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "invalid encrypted data")
+	}
+	return encryptedData[10:], nil
+}
+
+func (m *mockEncrypter) HashLookupData(data []byte) []byte {
+	// Simple mock hashing - just return data with hash prefix
+	return append([]byte("hash:"), data...)
+}
+
+// Mock Logger Implementation
+type mockLogger struct{}
+
+func (m *mockLogger) Info(msg string, fields ...logger.Field)  {}
+func (m *mockLogger) Warn(msg string, fields ...logger.Field)  {}
+func (m *mockLogger) Error(msg string, fields ...logger.Field) {}
+func (m *mockLogger) Debug(msg string, fields ...logger.Field) {}
+
+// Mock Cache Implementation
+type mockCache struct {
+	data map[string]interface{}
+}
+
+func newMockCache() *mockCache {
+	return &mockCache{
+		data: make(map[string]interface{}),
+	}
+}
+
+func (m *mockCache) Get(ctx context.Context, key string) (interface{}, time.Duration, error) {
+	if val, exists := m.data[key]; exists {
+		return val, time.Hour, nil
+	}
+	return nil, 0, errors.ErrCacheMiss
+}
+
+func (m *mockCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	m.data[key] = value
+	return nil
+}
+
+func (m *mockCache) Delete(ctx context.Context, key string) error {
+	delete(m.data, key)
+	return nil
+}
+
+// Mock Config Implementation
+type mockConfig struct {
+	values map[string]interface{}
+}
+
+func newMockConfig() *mockConfig {
+	return &mockConfig{
+		values: map[string]interface{}{
+			"user_service.max_login_attempts":      5,
+			"user_service.lockout_duration":        "30m",
+			"user_service.cache_user_ttl":          "15m",
+			"user_service.cache_stats_ttl":         "5m",
+			"user_service.enable_rate_limit":       true,
+			"user_service.rate_limit_window":       "1h",
+			"user_service.rate_limit_max_attempts": 10,
+		},
+	}
+}
+
+func (m *mockConfig) GetString(key string) (string, bool) {
+	if val, exists := m.values[key]; exists {
+		if str, ok := val.(string); ok {
+			return str, true
+		}
+	}
+	return "", false
+}
+
+func (m *mockConfig) GetInt(key string) (int, bool) {
+	if val, exists := m.values[key]; exists {
+		if i, ok := val.(int); ok {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+func (m *mockConfig) GetBool(key string) (bool, bool) {
+	if val, exists := m.values[key]; exists {
+		if b, ok := val.(bool); ok {
+			return b, true
+		}
+	}
+	return false, false
+}
+
+// Mock Metrics Implementation
+type mockMetrics struct{}
+type mockTimer struct{}
+type mockCounter struct{}
+
+func (m *mockMetrics) Timer(opts metrics.Options) metrics.Timer     { return &mockTimer{} }
+func (m *mockMetrics) Counter(opts metrics.Options) metrics.Counter { return &mockCounter{} }
+
+func (m *mockTimer) RecordSince(start time.Time) {}
+func (m *mockCounter) Inc()                      {}
+
+// Mock Auth Manager Implementation
+type mockAuthManager struct{}
+
+func (m *mockAuthManager) ValidateCredentials(ctx context.Context, providerType auth.ProviderType, credentials interface{}, userInfo *auth.UserInfo) error {
+	// Simple validation - just check that credentials exist
+	if credentials == nil {
+		return errors.NewValidationError("credentials", "credentials required")
+	}
+	return nil
+}
+
+func (m *mockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials interface{}) (interface{}, error) {
+	// Simple preparation - just return as-is for maps
+	return credentials, nil
+}
+
+func (m *mockAuthManager) GetProvider(providerType auth.ProviderType) (auth.Provider, error) {
+	// Return appropriate mock provider based on type
+	switch providerType {
+	case auth.ProviderTypePassword:
+		return &mockPasswordProvider{}, nil
+	default:
+		return nil, errors.NewUnsupportedProviderError(string(providerType))
+	}
+}
+
+func (m *mockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) (interface{}, error) {
+	// Simple mock - verify old credentials match and return new ones
+	if req.ProviderType == auth.ProviderTypePassword {
+		// Mock password verification
+		if oldCreds, ok := req.OldCredentials.(*password.PasswordCredentials); ok {
+			if oldCreds.Password == "StrongPass123!" { // Expected old password
+				return req.NewCredentials, nil
+			}
+		}
+		return nil, errors.NewInvalidCredentialsError()
+	}
+	return req.NewCredentials, nil
+}
+
+// Mock Password Provider Implementation
+type mockPasswordProvider struct{}
+
+func (m *mockPasswordProvider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+	// Check if credentials contain the correct password
+	if creds, ok := credentials.(*password.PasswordCredentials); ok {
+		if creds.Password == "StrongPass123!" {
+			return &auth.AuthenticationResult{
+				UserID:         "test-user-id",
+				ProviderType:   auth.ProviderTypePassword,
+				ProviderUserID: identifier,
+			}, nil
+		}
+	}
+	return nil, errors.NewInvalidCredentialsError()
+}
+
+func (m *mockPasswordProvider) VerifyPassword(ctx context.Context, storedData interface{}, password string) (bool, error) {
+	// Simple mock verification - check against stored password
+	if storedMap, ok := storedData.(map[string]interface{}); ok {
+		if storedPassword, exists := storedMap["password"]; exists {
+			return storedPassword == "hashed_password" && password == "StrongPass123!", nil
+		}
+	}
+	return false, nil
+}
+
+// Main function to create test user service
+func createTestUserService() UserService {
+	mockRepo := newMockRepository()
+	mockEnc := &mockEncrypter{}
+	mockLog := &mockLogger{}
+	mockCach := newMockCache()
+	mockConf := newMockConfig()
+	mockMet := &mockMetrics{}
+	mockAuth := &mockAuthManager{}
+
+	return NewUserService(
+		mockRepo,
+		mockEnc,
+		mockLog,
+		mockCach,
+		mockConf,
+		mockMet,
+		mockAuth,
+	)
+}
+
+// Helper function to create a test service with customizable repository
+func createTestUserServiceWithRepo(repo UserRepository) UserService {
+	mockEnc := &mockEncrypter{}
+	mockLog := &mockLogger{}
+	mockCach := newMockCache()
+	mockConf := newMockConfig()
+	mockMet := &mockMetrics{}
+	mockAuth := &mockAuthManager{}
+
+	return NewUserService(
+		repo,
+		mockEnc,
+		mockLog,
+		mockCach,
+		mockConf,
+		mockMet,
+		mockAuth,
+	)
+}
+
+// Helper function to get the mock repository from a test service
+func getMockRepository(service UserService) *mockRepository {
+	if userSvc, ok := service.(*userService); ok {
+		if mockRepo, ok := userSvc.repository.(*mockRepository); ok {
+			return mockRepo
+		}
+	}
+	return nil
+}

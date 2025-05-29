@@ -482,8 +482,3 @@ func TestCreateUser_RepositoryErrors(t *testing.T) {
 		t.Errorf("Expected internal error, got %s", appErr.Code)
 	}
 }
-
-// Helper function
-func stringPtr(s string) *string {
-	return &s
-}

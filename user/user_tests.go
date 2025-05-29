@@ -612,24 +612,3 @@ func TestUserStatus_Comprehensive(t *testing.T) {
 		})
 	}
 }
-
-// Remove meaningless tests that just check field assignments
-// These methods were testing trivial getters and setters:
-// - TestUser_GetID (just returns u.ID)
-// - Basic field assignment tests without business logic
-
-// Helper functions
-func createTestUser() *User {
-	return NewUser(
-		"John",
-		"Doe",
-		"john.doe@example.com",
-		"hashed_email",
-		auth.ProviderTypePassword,
-		map[string]interface{}{"password": "hashed_password"},
-	)
-}
-
-func timePtr(t time.Time) *time.Time {
-	return &t
-}
