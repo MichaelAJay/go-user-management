@@ -263,7 +263,7 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // AuthenticateUser authenticates a user with email and password.
@@ -444,7 +444,7 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	return &AuthenticationResponse{
-		User:       userCopy.ToUserResponse(),
+		User:       userCopy.ToUserResponse(s.encrypter),
 		AuthResult: authResult,
 		Message:    "Authentication successful",
 	}, nil
@@ -471,7 +471,7 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*UserResp
 			Name: "user_service.get_user_by_id.cache_hit",
 		})
 		counter.Inc()
-		return user.ToUserResponse(), nil
+		return user.ToUserResponse(s.encrypter), nil
 	}
 
 	// Get from repository
@@ -497,7 +497,7 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*UserResp
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // validateCreateUserRequest validates the create user request.
@@ -681,7 +681,7 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 					Name: "user_service.get_user_by_email.cache_hit",
 				})
 				counter.Inc()
-				return user.ToUserResponse(), nil // Read-only: use original safely
+				return user.ToUserResponse(s.encrypter), nil // Read-only: use original safely
 			}
 		}
 	}
@@ -711,7 +711,7 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil // Read-only: use original safely
+	return user.ToUserResponse(s.encrypter), nil // Read-only: use original safely
 }
 
 // UpdateProfile updates user profile information.
@@ -871,7 +871,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(), nil
+	return userCopy.ToUserResponse(s.encrypter), nil
 }
 
 // UpdateCredentials updates a user's authentication credentials.
@@ -1055,7 +1055,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	// Check current status
 	if user.Status == UserStatusActive {
 		s.logger.Info("User is already active", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(), nil
+		return user.ToUserResponse(s.encrypter), nil
 	}
 
 	if user.Status == UserStatusDeactivated {
@@ -1094,7 +1094,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // SuspendUser suspends a user account
@@ -1135,7 +1135,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 
 	if user.Status == UserStatusSuspended {
 		s.logger.Info("User is already suspended", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(), nil
+		return user.ToUserResponse(s.encrypter), nil
 	}
 
 	// Suspend user
@@ -1168,7 +1168,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // DeactivateUser deactivates a user account
@@ -1205,7 +1205,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	// Check if user is already deactivated
 	if user.Status == UserStatusDeactivated {
 		s.logger.Info("User is already deactivated", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(), nil
+		return user.ToUserResponse(s.encrypter), nil
 	}
 
 	// Deactivate user
@@ -1238,7 +1238,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // LockUser locks a user account
@@ -1307,7 +1307,7 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // UnlockUser unlocks a user account
@@ -1347,7 +1347,7 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	// Check if user is actually locked
 	if !user.IsLocked() {
 		s.logger.Info("User is not locked", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(), nil
+		return user.ToUserResponse(s.encrypter), nil
 	}
 
 	// Unlock user account
@@ -1378,7 +1378,7 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(), nil
+	return user.ToUserResponse(s.encrypter), nil
 }
 
 // ListUsers retrieves users with pagination and filtering
@@ -1420,7 +1420,7 @@ func (s *userService) ListUsers(ctx context.Context, req *ListUsersRequest) (*Li
 	// Convert to response DTOs
 	userResponses := make([]*UserResponse, len(users))
 	for i, user := range users {
-		userResponses[i] = user.ToUserResponse()
+		userResponses[i] = user.ToUserResponse(s.encrypter)
 	}
 
 	// Calculate if there are more results

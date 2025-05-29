@@ -223,6 +223,11 @@ const (
 	CodePasswordValidationFailed ErrorCode = "PASSWORD_VALIDATION_FAILED"
 	CodeRequiredFieldMissing     ErrorCode = "REQUIRED_FIELD_MISSING"
 	CodeInvalidFieldFormat       ErrorCode = "INVALID_FIELD_FORMAT"
+	CodeInvalidName              ErrorCode = "INVALID_NAME"
+	CodeInvalidEmailFormat       ErrorCode = "INVALID_EMAIL_FORMAT"
+	CodeMissingCredentials       ErrorCode = "MISSING_CREDENTIALS"
+	CodeUnsupportedProvider      ErrorCode = "UNSUPPORTED_AUTH_PROVIDER"
+	CodeEmptyField               ErrorCode = "EMPTY_FIELD"
 
 	// System error codes
 	CodeInternalError      ErrorCode = "INTERNAL_ERROR"
@@ -332,6 +337,29 @@ func NewValidationError(field, reason string) *AppError {
 func NewVersionMismatchError(expected, actual int64) *AppError {
 	return NewAppErrorWithDetails(CodeVersionMismatch, "Record was modified by another process",
 		fmt.Sprintf("Expected version: %d, Actual version: %d", expected, actual))
+}
+
+// NewInvalidNameError creates an invalid name error
+func NewInvalidNameError(field string) *AppError {
+	return NewAppErrorWithDetails(CodeInvalidName, "Invalid name field",
+		fmt.Sprintf("Field: %s", field))
+}
+
+// NewInvalidEmailFormatError creates an invalid email format error
+func NewInvalidEmailFormatError(email string) *AppError {
+	return NewAppErrorWithDetails(CodeInvalidEmailFormat, "Invalid email format",
+		fmt.Sprintf("Email: %s", email))
+}
+
+// NewMissingCredentialsError creates a missing credentials error
+func NewMissingCredentialsError() *AppError {
+	return NewAppError(CodeMissingCredentials, "Authentication credentials are required")
+}
+
+// NewUnsupportedProviderError creates an unsupported provider error
+func NewUnsupportedProviderError(provider string) *AppError {
+	return NewAppErrorWithDetails(CodeUnsupportedProvider, "Unsupported authentication provider",
+		fmt.Sprintf("Provider: %s", provider))
 }
 
 // IsErrorType checks if an error is of a specific type

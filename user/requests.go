@@ -3,6 +3,7 @@ package user
 import (
 	"time"
 
+	"github.com/MichaelAJay/go-encrypter"
 	"github.com/MichaelAJay/go-user-management/auth"
 )
 
@@ -124,7 +125,7 @@ type UserStatsResponse struct {
 
 // toUserResponse converts a User entity to a UserResponse DTO.
 // This method excludes sensitive information and provides computed fields.
-func (u *User) ToUserResponse() *UserResponse {
+func (u *User) ToUserResponse(enc encrypter.Encrypter) *UserResponse {
 	// Get available authentication providers
 	availableProviders := make([]auth.ProviderType, 0, len(u.AuthenticationData))
 	for providerType := range u.AuthenticationData {
@@ -138,7 +139,7 @@ func (u *User) ToUserResponse() *UserResponse {
 		UpdatedAt:              u.UpdatedAt,
 		LastLoginAt:            u.LastLoginAt,
 		Version:                u.Version,
-		DisplayName:            u.GetDisplayName(),
+		DisplayName:            u.GetDisplayName(enc),
 		EmailVerified:          u.Status != UserStatusPendingVerification,
 		AccountLocked:          u.IsLocked(),
 		CanAuthenticate:        u.CanAuthenticate(),
@@ -149,9 +150,9 @@ func (u *User) ToUserResponse() *UserResponse {
 
 // ToDetailedUserResponse converts a User entity to a DetailedUserResponse DTO.
 // This method includes additional metadata for administrative operations.
-func (u *User) ToDetailedUserResponse() *DetailedUserResponse {
+func (u *User) ToDetailedUserResponse(enc encrypter.Encrypter) *DetailedUserResponse {
 	response := &DetailedUserResponse{
-		UserResponse:  *u.ToUserResponse(),
+		UserResponse:  *u.ToUserResponse(enc),
 		LoginAttempts: u.LoginAttempts,
 		LockedUntil:   u.LockedUntil,
 	}

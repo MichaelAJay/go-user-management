@@ -5,6 +5,7 @@ import (
 
 	"maps"
 
+	"github.com/MichaelAJay/go-encrypter"
 	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
 	"github.com/google/uuid"
@@ -284,13 +285,23 @@ func (u *User) RemoveAuthenticationProvider(providerType auth.ProviderType) {
 }
 
 // GetDisplayName returns a formatted display name for the user
-func (u *User) GetDisplayName() string {
-	// TODO: Implement with encrypter service to decrypt FirstName and LastName
-	// For now, return a placeholder
-	if len(u.ID) >= 8 {
+func (u *User) GetDisplayName(enc encrypter.Encrypter) string {
+	if enc == nil {
+		// Fallback to ID-based display name if encrypter is not provided
+		if len(u.ID) >= 8 {
+			return "User " + u.ID[:8] // Use first 8 chars of ID as placeholder
+		}
+		return "User " + u.ID // Use full ID if shorter than 8 chars
+	}
+
+	// Decryp only FirstName
+	decryptedFirstName, err := enc.Decrypt(u.FirstName)
+	if err != nil {
 		return "User " + u.ID[:8] // Use first 8 chars of ID as placeholder
 	}
-	return "User " + u.ID // Use full ID if shorter than 8 chars
+
+	// Return the decrypted FirstName
+	return string(decryptedFirstName)
 }
 
 // Clone creates a deep copy of the user

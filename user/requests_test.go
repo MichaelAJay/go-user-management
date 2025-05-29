@@ -1,6 +1,7 @@
 package user
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -104,7 +105,7 @@ func TestUser_ToUserResponse(t *testing.T) {
 	// Add multiple authentication providers
 	user.AddAuthenticationProvider(auth.ProviderTypeOAuth, map[string]interface{}{"token": "oauth_token"})
 
-	response := user.ToUserResponse()
+	response := user.ToUserResponse(nil)
 
 	// Verify basic fields
 	if response.ID != user.ID {
@@ -157,7 +158,7 @@ func TestUser_ToUserResponse_PendingVerification(t *testing.T) {
 	user := createTestUser()
 	user.Status = UserStatusPendingVerification
 
-	response := user.ToUserResponse()
+	response := user.ToUserResponse(nil)
 
 	if response.EmailVerified {
 		t.Error("Expected EmailVerified to be false for pending verification user")
@@ -169,7 +170,7 @@ func TestUser_ToUserResponse_Locked(t *testing.T) {
 	user.Status = UserStatusActive
 	user.LockedUntil = timePtr(time.Now().Add(time.Hour))
 
-	response := user.ToUserResponse()
+	response := user.ToUserResponse(nil)
 
 	if !response.AccountLocked {
 		t.Error("Expected AccountLocked to be true for locked user")
@@ -185,7 +186,7 @@ func TestUser_ToDetailedUserResponse(t *testing.T) {
 	user.LockedUntil = timePtr(time.Now().Add(time.Hour))
 	user.HashedEmail = "abcdef1234567890"
 
-	response := user.ToDetailedUserResponse()
+	response := user.ToDetailedUserResponse(nil)
 
 	// Verify it includes all UserResponse fields
 	if response.ID != user.ID {
@@ -214,7 +215,7 @@ func TestUser_ToDetailedUserResponse_ShortHashedEmail(t *testing.T) {
 	user := createTestUser()
 	user.HashedEmail = "abc123"
 
-	response := user.ToDetailedUserResponse()
+	response := user.ToDetailedUserResponse(nil)
 
 	// For short hashed emails, should return the full value
 	if response.HashedEmailPreview != user.HashedEmail {
@@ -223,88 +224,358 @@ func TestUser_ToDetailedUserResponse_ShortHashedEmail(t *testing.T) {
 }
 
 func TestCreateUserRequest_Validation(t *testing.T) {
-	// This test verifies the structure of CreateUserRequest
-	// Actual validation would be done by the validation package
-	req := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john.doe@example.com",
-		Credentials:            map[string]interface{}{"password": "securepassword123"},
-		AuthenticationProvider: auth.ProviderTypePassword,
+	tests := []struct {
+		name    string
+		req     CreateUserRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid request",
+			req: CreateUserRequest{
+				FirstName:              "John",
+				LastName:               "Doe",
+				Email:                  "john.doe@example.com",
+				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing first name",
+			req: CreateUserRequest{
+				LastName:               "Doe",
+				Email:                  "john.doe@example.com",
+				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "first name is required",
+		},
+		{
+			name: "missing last name",
+			req: CreateUserRequest{
+				FirstName:              "John",
+				Email:                  "john.doe@example.com",
+				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "last name is required",
+		},
+		{
+			name: "invalid email",
+			req: CreateUserRequest{
+				FirstName:              "John",
+				LastName:               "Doe",
+				Email:                  "invalid-email",
+				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "invalid email format",
+		},
+		{
+			name: "missing credentials",
+			req: CreateUserRequest{
+				FirstName:              "John",
+				LastName:               "Doe",
+				Email:                  "john.doe@example.com",
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "credentials are required",
+		},
+		{
+			name: "missing auth provider",
+			req: CreateUserRequest{
+				FirstName:   "John",
+				LastName:    "Doe",
+				Email:       "john.doe@example.com",
+				Credentials: map[string]interface{}{"password": "securepassword123"},
+			},
+			wantErr: true,
+			errMsg:  "authentication provider is required",
+		},
+		{
+			name: "first name too long",
+			req: CreateUserRequest{
+				FirstName:              strings.Repeat("a", 101),
+				LastName:               "Doe",
+				Email:                  "john.doe@example.com",
+				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "first name must be 100 characters or less",
+		},
 	}
 
-	if req.FirstName == "" {
-		t.Error("Expected FirstName to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CreateUserRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("CreateUserRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
-	if req.LastName == "" {
-		t.Error("Expected LastName to be set")
+}
+
+func TestUpdateProfileRequest_Validation(t *testing.T) {
+	tests := []struct {
+		name    string
+		req     UpdateProfileRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid request with all fields",
+			req: UpdateProfileRequest{
+				FirstName: stringPtr("John"),
+				LastName:  stringPtr("Doe"),
+				Email:     stringPtr("john.doe@example.com"),
+			},
+			wantErr: false,
+		},
+		{
+			name:    "empty request",
+			req:     UpdateProfileRequest{},
+			wantErr: false,
+		},
+		{
+			name: "invalid email",
+			req: UpdateProfileRequest{
+				Email: stringPtr("invalid-email"),
+			},
+			wantErr: true,
+			errMsg:  "invalid email format",
+		},
+		{
+			name: "first name too long",
+			req: UpdateProfileRequest{
+				FirstName: stringPtr(strings.Repeat("a", 101)),
+			},
+			wantErr: true,
+			errMsg:  "first name must be 100 characters or less",
+		},
+		{
+			name: "empty first name",
+			req: UpdateProfileRequest{
+				FirstName: stringPtr(""),
+			},
+			wantErr: true,
+			errMsg:  "first name is required",
+		},
 	}
-	if req.Email == "" {
-		t.Error("Expected Email to be set")
-	}
-	if req.Credentials == nil {
-		t.Error("Expected Credentials to be set")
-	}
-	if req.AuthenticationProvider == "" {
-		t.Error("Expected AuthenticationProvider to be set")
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("UpdateProfileRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("UpdateProfileRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestUpdateCredentialsRequest_Validation(t *testing.T) {
-	req := &UpdateCredentialsRequest{
-		CurrentCredentials:     map[string]interface{}{"password": "oldpassword"},
-		NewCredentials:         map[string]interface{}{"password": "newpassword"},
-		AuthenticationProvider: auth.ProviderTypePassword,
+	tests := []struct {
+		name    string
+		req     UpdateCredentialsRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid request",
+			req: UpdateCredentialsRequest{
+				CurrentCredentials:     map[string]interface{}{"password": "oldpassword"},
+				NewCredentials:         map[string]interface{}{"password": "newpassword"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: false,
+		},
+		{
+			name: "missing current credentials",
+			req: UpdateCredentialsRequest{
+				NewCredentials:         map[string]interface{}{"password": "newpassword"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "current credentials are required",
+		},
+		{
+			name: "missing new credentials",
+			req: UpdateCredentialsRequest{
+				CurrentCredentials:     map[string]interface{}{"password": "oldpassword"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "new credentials are required",
+		},
+		{
+			name: "missing auth provider",
+			req: UpdateCredentialsRequest{
+				CurrentCredentials: map[string]interface{}{"password": "oldpassword"},
+				NewCredentials:     map[string]interface{}{"password": "newpassword"},
+			},
+			wantErr: true,
+			errMsg:  "authentication provider is required",
+		},
 	}
 
-	if req.CurrentCredentials == nil {
-		t.Error("Expected CurrentCredentials to be set")
-	}
-	if req.NewCredentials == nil {
-		t.Error("Expected NewCredentials to be set")
-	}
-	if req.AuthenticationProvider == "" {
-		t.Error("Expected AuthenticationProvider to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("UpdateCredentialsRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("UpdateCredentialsRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestAuthenticateRequest_Validation(t *testing.T) {
-	req := &AuthenticateRequest{
-		Email:                  "john.doe@example.com",
-		Credentials:            map[string]interface{}{"password": "password123"},
-		AuthenticationProvider: auth.ProviderTypePassword,
+	tests := []struct {
+		name    string
+		req     AuthenticateRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name: "valid request",
+			req: AuthenticateRequest{
+				Email:                  "john.doe@example.com",
+				Credentials:            map[string]interface{}{"password": "password123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: false,
+		},
+		{
+			name: "invalid email",
+			req: AuthenticateRequest{
+				Email:                  "invalid-email",
+				Credentials:            map[string]interface{}{"password": "password123"},
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "invalid email format",
+		},
+		{
+			name: "missing credentials",
+			req: AuthenticateRequest{
+				Email:                  "john.doe@example.com",
+				AuthenticationProvider: auth.ProviderTypePassword,
+			},
+			wantErr: true,
+			errMsg:  "credentials are required",
+		},
+		{
+			name: "missing auth provider",
+			req: AuthenticateRequest{
+				Email:       "john.doe@example.com",
+				Credentials: map[string]interface{}{"password": "password123"},
+			},
+			wantErr: true,
+			errMsg:  "authentication provider is required",
+		},
 	}
 
-	if req.Email == "" {
-		t.Error("Expected Email to be set")
-	}
-	if req.Credentials == nil {
-		t.Error("Expected Credentials to be set")
-	}
-	if req.AuthenticationProvider == "" {
-		t.Error("Expected AuthenticationProvider to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("AuthenticateRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("AuthenticateRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestListUsersRequest_Validation(t *testing.T) {
-	req := &ListUsersRequest{
-		Offset: 0,
-		Limit:  50,
-		Status: "active",
+	tests := []struct {
+		name    string
+		req     ListUsersRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid request",
+			req:     ListUsersRequest{Offset: 0, Limit: 50, Status: "active"},
+			wantErr: false,
+		},
+		{
+			name:    "valid request without status",
+			req:     ListUsersRequest{Offset: 0, Limit: 50},
+			wantErr: false,
+		},
+		{
+			name:    "negative offset",
+			req:     ListUsersRequest{Offset: -1, Limit: 50},
+			wantErr: true,
+			errMsg:  "offset must be non-negative",
+		},
+		{
+			name:    "zero limit",
+			req:     ListUsersRequest{Offset: 0, Limit: 0},
+			wantErr: true,
+			errMsg:  "limit must be positive",
+		},
+		{
+			name:    "limit too high",
+			req:     ListUsersRequest{Offset: 0, Limit: 1001},
+			wantErr: true,
+			errMsg:  "limit cannot exceed 1000",
+		},
+		{
+			name:    "invalid status",
+			req:     ListUsersRequest{Offset: 0, Limit: 50, Status: "invalid"},
+			wantErr: true,
+			errMsg:  "invalid status",
+		},
 	}
 
-	if req.Offset < 0 {
-		t.Error("Expected Offset to be non-negative")
-	}
-	if req.Limit <= 0 {
-		t.Error("Expected Limit to be positive")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ListUsersRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ListUsersRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestListUsersResponse_Structure(t *testing.T) {
 	users := []*UserResponse{
-		createTestUser().ToUserResponse(),
-		createTestUser().ToUserResponse(),
+		createTestUser().ToUserResponse(nil),
+		createTestUser().ToUserResponse(nil),
 	}
 
 	response := &ListUsersResponse{
@@ -341,7 +612,7 @@ func TestAuthenticationResponse_Structure(t *testing.T) {
 	}
 
 	response := &AuthenticationResponse{
-		User:       user.ToUserResponse(),
+		User:       user.ToUserResponse(nil),
 		AuthResult: authResult,
 		Message:    "Authentication successful",
 	}
@@ -382,46 +653,176 @@ func TestSessionData_Structure(t *testing.T) {
 }
 
 func TestPasswordResetRequest_Validation(t *testing.T) {
-	req := &PasswordResetRequest{
-		Email: "john.doe@example.com",
+	tests := []struct {
+		name    string
+		req     PasswordResetRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid request",
+			req:     PasswordResetRequest{Email: "john.doe@example.com"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid email",
+			req:     PasswordResetRequest{Email: "invalid-email"},
+			wantErr: true,
+			errMsg:  "invalid email format",
+		},
+		{
+			name:    "missing email",
+			req:     PasswordResetRequest{},
+			wantErr: true,
+			errMsg:  "email is required",
+		},
 	}
 
-	if req.Email == "" {
-		t.Error("Expected Email to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("PasswordResetRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("PasswordResetRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestCompletePasswordResetRequest_Validation(t *testing.T) {
-	req := &CompletePasswordResetRequest{
-		Token:       "reset_token_123",
-		NewPassword: "newpassword123",
+	tests := []struct {
+		name    string
+		req     CompletePasswordResetRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid request",
+			req:     CompletePasswordResetRequest{Token: "reset_token_123", NewPassword: "newpassword123"},
+			wantErr: false,
+		},
+		{
+			name:    "missing token",
+			req:     CompletePasswordResetRequest{NewPassword: "newpassword123"},
+			wantErr: true,
+			errMsg:  "token is required",
+		},
+		{
+			name:    "password too short",
+			req:     CompletePasswordResetRequest{Token: "reset_token_123", NewPassword: "short"},
+			wantErr: true,
+			errMsg:  "password must be at least 8 characters long",
+		},
+		{
+			name:    "password too long",
+			req:     CompletePasswordResetRequest{Token: "reset_token_123", NewPassword: strings.Repeat("a", 129)},
+			wantErr: true,
+			errMsg:  "password must be 128 characters or less",
+		},
 	}
 
-	if req.Token == "" {
-		t.Error("Expected Token to be set")
-	}
-	if req.NewPassword == "" {
-		t.Error("Expected NewPassword to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("CompletePasswordResetRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("CompletePasswordResetRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestVerifyEmailRequest_Validation(t *testing.T) {
-	req := &VerifyEmailRequest{
-		Token: "verification_token_123",
+	tests := []struct {
+		name    string
+		req     VerifyEmailRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid request",
+			req:     VerifyEmailRequest{Token: "verification_token_123"},
+			wantErr: false,
+		},
+		{
+			name:    "missing token",
+			req:     VerifyEmailRequest{},
+			wantErr: true,
+			errMsg:  "token is required",
+		},
+		{
+			name:    "empty token",
+			req:     VerifyEmailRequest{Token: "   "},
+			wantErr: true,
+			errMsg:  "token is required",
+		},
 	}
 
-	if req.Token == "" {
-		t.Error("Expected Token to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("VerifyEmailRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("VerifyEmailRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
 func TestResendVerificationRequest_Validation(t *testing.T) {
-	req := &ResendVerificationRequest{
-		Email: "john.doe@example.com",
+	tests := []struct {
+		name    string
+		req     ResendVerificationRequest
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid request",
+			req:     ResendVerificationRequest{Email: "john.doe@example.com"},
+			wantErr: false,
+		},
+		{
+			name:    "invalid email",
+			req:     ResendVerificationRequest{Email: "invalid-email"},
+			wantErr: true,
+			errMsg:  "invalid email format",
+		},
+		{
+			name:    "missing email",
+			req:     ResendVerificationRequest{},
+			wantErr: true,
+			errMsg:  "email is required",
+		},
 	}
 
-	if req.Email == "" {
-		t.Error("Expected Email to be set")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.req.Validate()
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ResendVerificationRequest.Validate() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if tt.wantErr && err != nil && tt.errMsg != "" {
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("ResendVerificationRequest.Validate() error = %v, expected to contain %v", err, tt.errMsg)
+				}
+			}
+		})
 	}
 }
 
@@ -456,10 +857,4 @@ func TestUserStatsResponse_Structure(t *testing.T) {
 	if response.Stats.ActiveUsers != 800 {
 		t.Errorf("Expected ActiveUsers 800, got %d", response.Stats.ActiveUsers)
 	}
-}
-
-// Helper functions
-
-func stringPtr(s string) *string {
-	return &s
 }
