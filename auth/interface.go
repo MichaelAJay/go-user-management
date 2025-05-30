@@ -19,13 +19,13 @@ type Manager interface {
 	Authenticate(ctx context.Context, req *AuthenticationRequest) (*AuthenticationResult, error)
 
 	// ValidateCredentials validates credentials using the specified provider
-	ValidateCredentials(ctx context.Context, providerType ProviderType, credentials interface{}, userInfo *UserInfo) error
+	ValidateCredentials(ctx context.Context, providerType ProviderType, credentials any, userInfo *UserInfo) error
 
 	// UpdateCredentials updates credentials using the specified provider
-	UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (interface{}, error)
+	UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (any, error)
 
 	// PrepareCredentials prepares credentials for storage using the specified provider
-	PrepareCredentials(ctx context.Context, providerType ProviderType, credentials interface{}) (interface{}, error)
+	PrepareCredentials(ctx context.Context, providerType ProviderType, credentials any) (any, error)
 
 	// ListProviders returns a list of registered provider types
 	ListProviders() []ProviderType
