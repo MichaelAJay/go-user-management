@@ -9,21 +9,24 @@ import (
 	"github.com/MichaelAJay/go-user-management/errors"
 )
 
-// Manager coordinates authentication across multiple providers.
+// manager coordinates authentication across multiple providers.
 // This follows the Strategy pattern, allowing different authentication
 // methods to be used interchangeably.
 //
 // Best Practice: Open/Closed Principle - new authentication providers
 // can be added without modifying existing code.
-type Manager struct {
+type manager struct {
 	providers map[ProviderType]AuthenticationProvider
 	logger    logger.Logger
 	metrics   metrics.Registry
 }
 
-// NewManager creates a new authentication manager.
-func NewManager(logger logger.Logger, metrics metrics.Registry) *Manager {
-	return &Manager{
+// NewManager creates a new authentication manager that implements the Manager interface.
+//
+// Best Practice: Return interfaces, not concrete types - this makes the code
+// more testable and flexible.
+func NewManager(logger logger.Logger, metrics metrics.Registry) Manager {
+	return &manager{
 		providers: make(map[ProviderType]AuthenticationProvider),
 		logger:    logger,
 		metrics:   metrics,
@@ -31,11 +34,7 @@ func NewManager(logger logger.Logger, metrics metrics.Registry) *Manager {
 }
 
 // RegisterProvider registers an authentication provider with the manager.
-// This allows for dynamic registration of providers at runtime.
-//
-// Best Practice: Registry pattern - providers are registered dynamically,
-// making the system extensible and testable.
-func (m *Manager) RegisterProvider(provider AuthenticationProvider) error {
+func (m *manager) RegisterProvider(provider AuthenticationProvider) error {
 	providerType := provider.GetProviderType()
 
 	if _, exists := m.providers[providerType]; exists {
@@ -50,7 +49,7 @@ func (m *Manager) RegisterProvider(provider AuthenticationProvider) error {
 }
 
 // GetProvider returns the authentication provider for the specified type.
-func (m *Manager) GetProvider(providerType ProviderType) (AuthenticationProvider, error) {
+func (m *manager) GetProvider(providerType ProviderType) (AuthenticationProvider, error) {
 	provider, exists := m.providers[providerType]
 	if !exists {
 		return nil, fmt.Errorf("no provider registered for type %s", providerType)
@@ -60,7 +59,7 @@ func (m *Manager) GetProvider(providerType ProviderType) (AuthenticationProvider
 }
 
 // Authenticate authenticates a user using the specified provider.
-func (m *Manager) Authenticate(ctx context.Context, req *AuthenticationRequest) (*AuthenticationResult, error) {
+func (m *manager) Authenticate(ctx context.Context, req *AuthenticationRequest) (*AuthenticationResult, error) {
 	provider, err := m.GetProvider(req.ProviderType)
 	if err != nil {
 		counter := m.metrics.Counter(metrics.Options{
@@ -97,7 +96,7 @@ func (m *Manager) Authenticate(ctx context.Context, req *AuthenticationRequest) 
 }
 
 // ValidateCredentials validates credentials using the specified provider.
-func (m *Manager) ValidateCredentials(ctx context.Context, providerType ProviderType, credentials interface{}, userInfo *UserInfo) error {
+func (m *manager) ValidateCredentials(ctx context.Context, providerType ProviderType, credentials interface{}, userInfo *UserInfo) error {
 	provider, err := m.GetProvider(providerType)
 	if err != nil {
 		return errors.NewValidationError("provider_type", err.Error())
@@ -107,7 +106,7 @@ func (m *Manager) ValidateCredentials(ctx context.Context, providerType Provider
 }
 
 // UpdateCredentials updates credentials using the specified provider.
-func (m *Manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (interface{}, error) {
+func (m *manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (interface{}, error) {
 	provider, err := m.GetProvider(req.ProviderType)
 	if err != nil {
 		return nil, errors.NewValidationError("provider_type", err.Error())
@@ -122,7 +121,7 @@ func (m *Manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRe
 }
 
 // PrepareCredentials prepares credentials for storage using the specified provider.
-func (m *Manager) PrepareCredentials(ctx context.Context, providerType ProviderType, credentials interface{}) (interface{}, error) {
+func (m *manager) PrepareCredentials(ctx context.Context, providerType ProviderType, credentials interface{}) (interface{}, error) {
 	provider, err := m.GetProvider(providerType)
 	if err != nil {
 		return nil, errors.NewValidationError("provider_type", err.Error())
@@ -132,7 +131,7 @@ func (m *Manager) PrepareCredentials(ctx context.Context, providerType ProviderT
 }
 
 // ListProviders returns a list of registered provider types.
-func (m *Manager) ListProviders() []ProviderType {
+func (m *manager) ListProviders() []ProviderType {
 	types := make([]ProviderType, 0, len(m.providers))
 	for providerType := range m.providers {
 		types = append(types, providerType)
@@ -141,7 +140,10 @@ func (m *Manager) ListProviders() []ProviderType {
 }
 
 // HasProvider checks if a provider of the specified type is registered.
-func (m *Manager) HasProvider(providerType ProviderType) bool {
+func (m *manager) HasProvider(providerType ProviderType) bool {
 	_, exists := m.providers[providerType]
 	return exists
 }
+
+// Ensure manager implements Manager interface
+var _ Manager = (*manager)(nil)

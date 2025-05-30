@@ -246,7 +246,8 @@ func TestNewManager(t *testing.T) {
 	if manager == nil {
 		t.Fatal("Expected providers map to be initialized")
 	}
-	if len(manager.providers) != 0 {
+	providers := manager.ListProviders()
+	if len(providers) != 0 {
 		t.Error("Expected providers map to be empty initially")
 	}
 }
@@ -265,13 +266,24 @@ func TestManager_RegisterProvider(t *testing.T) {
 		t.Errorf("Expected no error registering provider, got %v", err)
 	}
 
-	if len(manager.providers) != 1 {
-		t.Errorf("Expected 1 provider, got %d", len(manager.providers))
+	// Test through interface methods
+	providers := manager.ListProviders()
+	if len(providers) != 1 {
+		t.Errorf("Expected 1 provider, got %d", len(providers))
 	}
 
-	// Verify the provider is registered
-	if _, exists := manager.providers[ProviderTypePassword]; !exists {
+	// Verify the provider is registered using HasProvider
+	if !manager.HasProvider(ProviderTypePassword) {
 		t.Error("Expected password provider to be registered")
+	}
+
+	// Verify we can get the provider
+	retrievedProvider, err := manager.GetProvider(ProviderTypePassword)
+	if err != nil {
+		t.Errorf("Expected to retrieve registered provider, got error: %v", err)
+	}
+	if retrievedProvider != provider {
+		t.Error("Expected to get the same provider instance")
 	}
 
 	// Verify logging
@@ -303,8 +315,11 @@ func TestManager_RegisterProvider_Duplicate(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when registering duplicate provider")
 	}
-	if len(manager.providers) != 1 {
-		t.Errorf("Expected 1 provider after duplicate registration, got %d", len(manager.providers))
+
+	// Test through interface methods
+	providers := manager.ListProviders()
+	if len(providers) != 1 {
+		t.Errorf("Expected 1 provider after duplicate registration, got %d", len(providers))
 	}
 }
 
