@@ -74,7 +74,7 @@ import "log"
 
 type SimpleLogger struct{}
 
-func (l *SimpleLogger) Info(msg string, fields ...interface{}) {
+func (l *SimpleLogger) Info(msg string, fields ...any) {
 	log.Printf("[INFO] %s %v", msg, fields)
 }
 // ... other log levels
@@ -107,7 +107,7 @@ type SimpleCache struct {
 }
 
 type cacheItem struct {
-	value     interface{}
+	value     any
 	expiresAt time.Time
 }
 // ... implement Get, Set, Delete methods
@@ -135,14 +135,14 @@ Implement AES-GCM encryption directly using Go's `crypto/aes` and `crypto/cipher
 Create interfaces for all external dependencies:
 ```go
 type Logger interface {
-	Info(msg string, fields ...interface{})
-	Error(msg string, fields ...interface{})
+	Info(msg string, fields ...any)
+	Error(msg string, fields ...any)
 	// ... other methods
 }
 
 type Cache interface {
-	Get(ctx context.Context, key string) (interface{}, error)
-	Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error
+	Get(ctx context.Context, key string) (any, error)
+	Set(ctx context.Context, key string, value any, ttl time.Duration) error
 	Delete(ctx context.Context, key string) error
 }
 

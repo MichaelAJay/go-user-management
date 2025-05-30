@@ -19,10 +19,10 @@ The `AuthenticationProvider` interface defines the contract for all authenticati
 
 ```go
 type AuthenticationProvider interface {
-    Authenticate(ctx context.Context, identifier string, credentials interface{}) (*AuthenticationResult, error)
-    ValidateCredentials(ctx context.Context, credentials interface{}, userInfo *UserInfo) error
-    UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error)
-    PrepareCredentials(ctx context.Context, credentials interface{}) (interface{}, error)
+    Authenticate(ctx context.Context, identifier string, credentials any) (*AuthenticationResult, error)
+    ValidateCredentials(ctx context.Context, credentials any, userInfo *UserInfo) error
+    UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error)
+    PrepareCredentials(ctx context.Context, credentials any) (any, error)
     GetProviderType() ProviderType
     SupportsCredentialUpdate() bool
 }
@@ -57,7 +57,7 @@ type User struct {
     // ... other fields ...
     
     // AuthenticationData stores provider-specific authentication data
-    AuthenticationData map[auth.ProviderType]interface{} `json:"-"`
+    AuthenticationData map[auth.ProviderType]any `json:"-"`
     
     // PrimaryAuthProvider indicates the primary authentication provider
     PrimaryAuthProvider auth.ProviderType `json:"primary_auth_provider"`
@@ -149,7 +149,7 @@ type OAuthProvider struct {
     // ... other OAuth-specific fields
 }
 
-func (p *OAuthProvider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+func (p *OAuthProvider) Authenticate(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error) {
     // OAuth-specific authentication logic
 }
 
@@ -219,7 +219,7 @@ The refactored architecture improves testability:
 // Mock authentication provider for testing
 type MockAuthProvider struct{}
 
-func (m *MockAuthProvider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+func (m *MockAuthProvider) Authenticate(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error) {
     // Mock implementation
 }
 
