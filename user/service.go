@@ -71,7 +71,7 @@ type userService struct {
 	config         config.Config
 	metrics        metrics.Registry
 	emailValidator *validation.EmailValidator
-	authManager    *auth.Manager
+	authManager    auth.Manager
 }
 
 // ServiceConfig contains configuration for the UserService.
@@ -103,7 +103,7 @@ func NewUserService(
 	cache cache.Cache,
 	config config.Config,
 	metrics metrics.Registry,
-	authManager *auth.Manager,
+	authManager auth.Manager,
 ) UserService {
 	// Load service configuration
 	serviceConfig := &ServiceConfig{}

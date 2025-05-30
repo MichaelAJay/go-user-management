@@ -500,94 +500,157 @@ func (m *mockTimer) RecordSince(start time.Time)          {}
 func (m *mockTimer) Time(fn func()) time.Duration         { return time.Duration(0) }
 func (m *mockTimer) With(tags metrics.Tags) metrics.Timer { return m }
 
-// Mock Auth Manager Implementation
-type mockAuthManager struct{}
+// Mock Auth Manager Implementation - implements auth.Manager interface
+type mockAuthManager struct {
+	providers               map[auth.ProviderType]auth.AuthenticationProvider
+	authenticateFunc        func(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error)
+	validateCredentialsFunc func(ctx context.Context, providerType auth.ProviderType, credentials interface{}, userInfo *auth.UserInfo) error
+	updateCredentialsFunc   func(ctx context.Context, req *auth.CredentialUpdateRequest) (interface{}, error)
+	prepareCredentialsFunc  func(ctx context.Context, providerType auth.ProviderType, credentials interface{}) (interface{}, error)
+	getProviderFunc         func(providerType auth.ProviderType) (auth.AuthenticationProvider, error)
+}
+
+func newMockAuthManager() auth.Manager { // Return the interface type
+	mockProvider := newMockPasswordProvider()
+	providers := make(map[auth.ProviderType]auth.AuthenticationProvider)
+	providers[auth.ProviderTypePassword] = mockProvider
+
+	return &mockAuthManager{
+		providers: providers,
+	}
+}
 
 func (m *mockAuthManager) RegisterProvider(provider auth.AuthenticationProvider) error {
 	return nil
 }
 
 func (m *mockAuthManager) GetProvider(providerType auth.ProviderType) (auth.AuthenticationProvider, error) {
-	// Return appropriate mock provider based on type
-	switch providerType {
-	case auth.ProviderTypePassword:
-		return &mockPasswordProvider{}, nil
-	default:
-		return nil, errors.NewUnsupportedProviderError(string(providerType))
+	if m.getProviderFunc != nil {
+		return m.getProviderFunc(providerType)
 	}
+	if provider, exists := m.providers[providerType]; exists {
+		return provider, nil
+	}
+	return nil, errors.NewValidationError("provider_type", "provider not found")
 }
 
 func (m *mockAuthManager) Authenticate(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error) {
-	return nil, nil
+	if m.authenticateFunc != nil {
+		return m.authenticateFunc(ctx, req)
+	}
+	return &auth.AuthenticationResult{
+		UserID:       "test-user-id",
+		ProviderType: req.ProviderType,
+	}, nil
 }
 
 func (m *mockAuthManager) ValidateCredentials(ctx context.Context, providerType auth.ProviderType, credentials interface{}, userInfo *auth.UserInfo) error {
-	// Simple validation - just check that credentials exist
-	if credentials == nil {
-		return errors.NewValidationError("credentials", "credentials required")
+	if m.validateCredentialsFunc != nil {
+		return m.validateCredentialsFunc(ctx, providerType, credentials, userInfo)
 	}
 	return nil
 }
 
 func (m *mockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) (interface{}, error) {
-	// Simple mock - verify old credentials match and return new ones
-	if req.ProviderType == auth.ProviderTypePassword {
-		// Mock password verification
-		if oldCreds, ok := req.OldCredentials.(*password.PasswordCredentials); ok {
-			if oldCreds.Password == "StrongPass123!" { // Expected old password
-				return req.NewCredentials, nil
-			}
-		}
-		return nil, errors.NewInvalidCredentialsError()
+	if m.updateCredentialsFunc != nil {
+		return m.updateCredentialsFunc(ctx, req)
 	}
 	return req.NewCredentials, nil
 }
 
 func (m *mockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials interface{}) (interface{}, error) {
-	// Simple preparation - just return as-is for maps
+	if m.prepareCredentialsFunc != nil {
+		return m.prepareCredentialsFunc(ctx, providerType, credentials)
+	}
 	return credentials, nil
 }
 
 func (m *mockAuthManager) ListProviders() []auth.ProviderType {
-	return []auth.ProviderType{auth.ProviderTypePassword}
+	types := make([]auth.ProviderType, 0, len(m.providers))
+	for providerType := range m.providers {
+		types = append(types, providerType)
+	}
+	return types
 }
 
 func (m *mockAuthManager) HasProvider(providerType auth.ProviderType) bool {
-	return providerType == auth.ProviderTypePassword
+	_, exists := m.providers[providerType]
+	return exists
 }
 
-// Mock Password Provider Implementation
-type mockPasswordProvider struct{}
+// Mock Password Provider Implementation for testing password verification
+type mockPasswordProvider struct {
+	authenticateFunc        func(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error)
+	validateCredentialsFunc func(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error
+	updateCredentialsFunc   func(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error)
+	prepareCredentialsFunc  func(ctx context.Context, credentials interface{}) (interface{}, error)
+	verifyPasswordFunc      func(ctx context.Context, storedAuthData interface{}, password string) (bool, error)
+}
+
+func newMockPasswordProvider() *mockPasswordProvider {
+	return &mockPasswordProvider{
+		authenticateFunc: func(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+			// Default: check for correct test password
+			if creds, ok := credentials.(*password.PasswordCredentials); ok {
+				if creds.Password == "StrongPass123!" {
+					return &auth.AuthenticationResult{
+						UserID:         "test-user-id",
+						ProviderType:   auth.ProviderTypePassword,
+						ProviderUserID: identifier,
+					}, nil
+				}
+			}
+			return nil, errors.NewInvalidCredentialsError()
+		},
+		validateCredentialsFunc: func(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error {
+			if credentials == nil {
+				return errors.NewValidationError("credentials", "credentials required")
+			}
+			return nil
+		},
+		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
+			return newCredentials, nil
+		},
+		prepareCredentialsFunc: func(ctx context.Context, credentials interface{}) (interface{}, error) {
+			return credentials, nil
+		},
+		verifyPasswordFunc: func(ctx context.Context, storedAuthData interface{}, password string) (bool, error) {
+			// Default verification logic
+			if storedData, ok := storedAuthData.(map[string]interface{}); ok {
+				if storedPassword, exists := storedData["password"]; exists {
+					return storedPassword == "hashed_password" && password == "StrongPass123!", nil
+				}
+			}
+			return false, nil
+		},
+	}
+}
 
 func (m *mockPasswordProvider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
-	// Check if credentials contain the correct password
-	if creds, ok := credentials.(*password.PasswordCredentials); ok {
-		if creds.Password == "StrongPass123!" {
-			return &auth.AuthenticationResult{
-				UserID:         "test-user-id",
-				ProviderType:   auth.ProviderTypePassword,
-				ProviderUserID: identifier,
-			}, nil
-		}
+	if m.authenticateFunc != nil {
+		return m.authenticateFunc(ctx, identifier, credentials)
 	}
 	return nil, errors.NewInvalidCredentialsError()
 }
 
 func (m *mockPasswordProvider) ValidateCredentials(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error {
-	// Simple validation - just check that credentials exist
-	if credentials == nil {
-		return errors.NewValidationError("credentials", "credentials required")
+	if m.validateCredentialsFunc != nil {
+		return m.validateCredentialsFunc(ctx, credentials, userInfo)
 	}
 	return nil
 }
 
 func (m *mockPasswordProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
-	// Simple mock - just return new credentials
+	if m.updateCredentialsFunc != nil {
+		return m.updateCredentialsFunc(ctx, userID, oldCredentials, newCredentials)
+	}
 	return newCredentials, nil
 }
 
 func (m *mockPasswordProvider) PrepareCredentials(ctx context.Context, credentials interface{}) (interface{}, error) {
-	// Simple preparation - just return as-is for maps
+	if m.prepareCredentialsFunc != nil {
+		return m.prepareCredentialsFunc(ctx, credentials)
+	}
 	return credentials, nil
 }
 
@@ -599,43 +662,83 @@ func (m *mockPasswordProvider) SupportsCredentialUpdate() bool {
 	return true
 }
 
-func createTestUserService() UserService {
-	mockRepo := newMockRepository()
-	mockEnc := &mockEncrypter{}
-	mockLog := &mockLogger{}
-	mockCach := newMockCache()
-	mockConf := newMockConfig()
-	mockMet := &mockMetrics{}
-	mockAuth := &mockAuthManager{}
+func (m *mockPasswordProvider) VerifyPassword(ctx context.Context, storedAuthData interface{}, password string) (bool, error) {
+	if m.verifyPasswordFunc != nil {
+		return m.verifyPasswordFunc(ctx, storedAuthData, password)
+	}
+	return false, nil
+}
 
+// createTestUserService creates a service with all mocked dependencies for pure unit tests
+func createTestUserService() UserService {
 	return NewUserService(
-		mockRepo,
-		mockEnc,
-		mockLog,
-		mockCach,
-		mockConf,
-		mockMet,
-		mockAuth,
+		newMockRepository(),
+		&mockEncrypter{},
+		&mockLogger{},
+		newMockCache(),
+		newMockConfig(),
+		&mockMetrics{},
+		newMockAuthManager(), // Returns auth.Manager interface
 	)
 }
 
 // Helper function to create a test service with customizable repository
 func createTestUserServiceWithRepo(repo UserRepository) UserService {
-	mockEnc := &mockEncrypter{}
-	mockLog := &mockLogger{}
-	mockCach := newMockCache()
-	mockConf := newMockConfig()
-	mockMet := &mockMetrics{}
-	mockAuth := &mockAuthManager{}
+	return NewUserService(
+		repo,
+		&mockEncrypter{},
+		&mockLogger{},
+		newMockCache(),
+		newMockConfig(),
+		&mockMetrics{},
+		newMockAuthManager(),
+	)
+}
+
+// Helper function to create a test service with customizable auth manager
+func createTestUserServiceWithAuth(authManager auth.Manager) UserService { // Parameter is interface
+	return NewUserService(
+		newMockRepository(),
+		&mockEncrypter{},
+		&mockLogger{},
+		newMockCache(),
+		newMockConfig(),
+		&mockMetrics{},
+		authManager,
+	)
+}
+
+// Integration test helper - uses real auth manager with mock providers
+func createIntegrationTestService() UserService {
+	authManager := auth.NewManager(&mockLogger{}, &mockMetrics{})
+	passwordProvider := newMockPasswordProvider()
+	authManager.RegisterProvider(passwordProvider)
+
+	return NewUserService(
+		newMockRepository(),
+		&mockEncrypter{},
+		&mockLogger{},
+		newMockCache(),
+		newMockConfig(),
+		&mockMetrics{},
+		authManager, // Real auth manager implementing auth.Manager
+	)
+}
+
+// Integration test helper with customizable repository
+func createIntegrationTestServiceWithRepo(repo UserRepository) UserService {
+	authManager := auth.NewManager(&mockLogger{}, &mockMetrics{})
+	passwordProvider := newMockPasswordProvider()
+	authManager.RegisterProvider(passwordProvider)
 
 	return NewUserService(
 		repo,
-		mockEnc,
-		mockLog,
-		mockCach,
-		mockConf,
-		mockMet,
-		mockAuth,
+		&mockEncrypter{},
+		&mockLogger{},
+		newMockCache(),
+		newMockConfig(),
+		&mockMetrics{},
+		authManager,
 	)
 }
 
@@ -644,6 +747,17 @@ func getMockRepository(service UserService) *mockRepository {
 	if userSvc, ok := service.(*userService); ok {
 		if mockRepo, ok := userSvc.repository.(*mockRepository); ok {
 			return mockRepo
+		}
+	}
+	return nil
+}
+
+// Helper function to get the mock auth manager from a test service (for unit tests)
+// NOTE: This only works if you used the mock auth manager, not the real one
+func getMockAuthManager(service UserService) *mockAuthManager {
+	if userSvc, ok := service.(*userService); ok {
+		if mockAuth, ok := userSvc.authManager.(*mockAuthManager); ok {
+			return mockAuth
 		}
 	}
 	return nil
