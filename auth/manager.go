@@ -96,7 +96,7 @@ func (m *manager) Authenticate(ctx context.Context, req *AuthenticationRequest) 
 }
 
 // ValidateCredentials validates credentials using the specified provider.
-func (m *manager) ValidateCredentials(ctx context.Context, providerType ProviderType, credentials interface{}, userInfo *UserInfo) error {
+func (m *manager) ValidateCredentials(ctx context.Context, providerType ProviderType, credentials any, userInfo *UserInfo) error {
 	provider, err := m.GetProvider(providerType)
 	if err != nil {
 		return errors.NewValidationError("provider_type", err.Error())
@@ -106,7 +106,7 @@ func (m *manager) ValidateCredentials(ctx context.Context, providerType Provider
 }
 
 // UpdateCredentials updates credentials using the specified provider.
-func (m *manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (interface{}, error) {
+func (m *manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (any, error) {
 	provider, err := m.GetProvider(req.ProviderType)
 	if err != nil {
 		return nil, errors.NewValidationError("provider_type", err.Error())
@@ -121,7 +121,7 @@ func (m *manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRe
 }
 
 // PrepareCredentials prepares credentials for storage using the specified provider.
-func (m *manager) PrepareCredentials(ctx context.Context, providerType ProviderType, credentials interface{}) (interface{}, error) {
+func (m *manager) PrepareCredentials(ctx context.Context, providerType ProviderType, credentials any) (any, error) {
 	provider, err := m.GetProvider(providerType)
 	if err != nil {
 		return nil, errors.NewValidationError("provider_type", err.Error())
