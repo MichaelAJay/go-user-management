@@ -145,45 +145,47 @@ func TestUser_AccountLocking(t *testing.T) {
 // Test unlock account logic
 func TestUser_UnlockAccount(t *testing.T) {
 	tests := []struct {
-		name                 string
-		initialStatus        UserStatus
-		initialLockedUntil   *time.Time
-		initialLoginAttempts int
-		expectedStatus       UserStatus
-		expectedLocked       bool
+		name           string
+		createUser     func() *User
+		expectedStatus UserStatus
+		expectedLocked bool
 	}{
 		{
-			name:                 "unlock permanently locked",
-			initialStatus:        UserStatusLocked,
-			initialLockedUntil:   nil,
-			initialLoginAttempts: 5,
-			expectedStatus:       UserStatusActive,
-			expectedLocked:       false,
+			name: "unlock permanently locked",
+			createUser: func() *User {
+				user := createLockedTestUser() // Use helper for locked user
+				user.LoginAttempts = 5
+				return user
+			},
+			expectedStatus: UserStatusActive,
+			expectedLocked: false,
 		},
 		{
-			name:                 "unlock temporarily locked",
-			initialStatus:        UserStatusActive,
-			initialLockedUntil:   timePtr(time.Now().Add(time.Hour)),
-			initialLoginAttempts: 3,
-			expectedStatus:       UserStatusActive,
-			expectedLocked:       false,
+			name: "unlock temporarily locked",
+			createUser: func() *User {
+				user := createActiveTestUser() // Use helper for active user
+				user.LockedUntil = timePtr(time.Now().Add(time.Hour))
+				user.LoginAttempts = 3
+				return user
+			},
+			expectedStatus: UserStatusActive,
+			expectedLocked: false,
 		},
 		{
-			name:                 "unlock already unlocked",
-			initialStatus:        UserStatusActive,
-			initialLockedUntil:   nil,
-			initialLoginAttempts: 0,
-			expectedStatus:       UserStatusActive,
-			expectedLocked:       false,
+			name: "unlock already unlocked",
+			createUser: func() *User {
+				user := createActiveTestUser() // Use helper for active user
+				user.LoginAttempts = 0
+				return user
+			},
+			expectedStatus: UserStatusActive,
+			expectedLocked: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			user := createTestUser()
-			user.Status = tt.initialStatus
-			user.LockedUntil = tt.initialLockedUntil
-			user.LoginAttempts = tt.initialLoginAttempts
+			user := tt.createUser()
 
 			user.UnlockAccount()
 

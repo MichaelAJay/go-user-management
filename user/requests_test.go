@@ -98,8 +98,7 @@ func TestUpdateProfileRequest_HasEmailChange(t *testing.T) {
 }
 
 func TestUser_ToUserResponse(t *testing.T) {
-	user := createTestUser()
-	user.Status = UserStatusActive
+	user := createActiveTestUser()
 	user.LastLoginAt = timePtr(time.Now())
 
 	// Add multiple authentication providers
@@ -155,8 +154,7 @@ func TestUser_ToUserResponse(t *testing.T) {
 }
 
 func TestUser_ToUserResponse_PendingVerification(t *testing.T) {
-	user := createTestUser()
-	user.Status = UserStatusPendingVerification
+	user := createPendingTestUser()
 
 	response := user.ToUserResponse(nil)
 
@@ -166,8 +164,7 @@ func TestUser_ToUserResponse_PendingVerification(t *testing.T) {
 }
 
 func TestUser_ToUserResponse_Locked(t *testing.T) {
-	user := createTestUser()
-	user.Status = UserStatusActive
+	user := createActiveTestUser()
 	user.LockedUntil = timePtr(time.Now().Add(time.Hour))
 
 	response := user.ToUserResponse(nil)

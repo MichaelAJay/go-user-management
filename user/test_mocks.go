@@ -762,3 +762,64 @@ func getMockAuthManager(service UserService) *mockAuthManager {
 	}
 	return nil
 }
+
+// Additional helper functions for creating test users in specific states
+
+// createActiveTestUser creates a test user in active status
+func createActiveTestUser() *User {
+	user := createTestUser()
+	user.Status = UserStatusActive
+	return user
+}
+
+// createPendingTestUser creates a test user in pending verification status
+func createPendingTestUser() *User {
+	user := createTestUser()
+	user.Status = UserStatusPendingVerification
+	return user
+}
+
+// createLockedTestUser creates a test user that is locked
+func createLockedTestUser() *User {
+	user := createTestUser()
+	user.Status = UserStatusLocked
+	user.LockAccount(nil) // Permanent lock
+	return user
+}
+
+// Helper function to create a service with a pre-configured repository containing users
+func createTestUserServiceWithUsers(users ...*User) UserService {
+	repo := newMockRepository()
+	for _, user := range users {
+		repo.users[user.ID] = user.Clone()
+		repo.emailIndex[user.HashedEmail] = user.ID
+	}
+
+	return NewUserService(
+		repo,
+		&mockEncrypter{},
+		&mockLogger{},
+		newMockCache(),
+		newMockConfig(),
+		&mockMetrics{},
+		newMockAuthManager(),
+	)
+}
+
+// Helper function to create a service with a repository that returns specific errors
+func createTestUserServiceWithRepoError(methodName string, err error) UserService {
+	repo := newMockRepository()
+
+	switch methodName {
+	case "create":
+		repo.createFunc = func(context.Context, *User) error { return err }
+	case "getByEmail":
+		repo.getByEmailFunc = func(context.Context, string) (*User, error) { return nil, err }
+	case "getByID":
+		repo.getByIDFunc = func(context.Context, string) (*User, error) { return nil, err }
+	case "update":
+		repo.updateFunc = func(context.Context, *User) error { return err }
+	}
+
+	return createTestUserServiceWithRepo(repo)
+}

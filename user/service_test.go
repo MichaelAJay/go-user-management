@@ -454,7 +454,10 @@ func TestCreateUser_RepositoryErrors(t *testing.T) {
 	ctx := context.Background()
 
 	// Get the mock repository and set it to fail
-	mockRepo := service.(*userService).repository.(*mockRepository)
+	mockRepo := getMockRepository(service)
+	if mockRepo == nil {
+		t.Fatal("Failed to get mock repository from service")
+	}
 	mockRepo.createFunc = func(context.Context, *User) error {
 		return fmt.Errorf("database connection failed")
 	}
@@ -480,5 +483,140 @@ func TestCreateUser_RepositoryErrors(t *testing.T) {
 		t.Error("Expected AppError type")
 	} else if appErr.Code != errors.CodeInternalError {
 		t.Errorf("Expected internal error, got %s", appErr.Code)
+	}
+}
+
+// Test using createTestUserServiceWithRepoError helper
+func TestCreateUser_RepositoryErrorsWithHelper(t *testing.T) {
+	ctx := context.Background()
+
+	// Use helper to create service with repository that always fails on create
+	service := createTestUserServiceWithRepoError("create", fmt.Errorf("database connection failed"))
+
+	req := &CreateUserRequest{
+		FirstName:              "John",
+		LastName:               "Doe",
+		Email:                  "john@example.com",
+		AuthenticationProvider: auth.ProviderTypePassword,
+		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+	}
+
+	response, err := service.CreateUser(ctx, req)
+
+	if err == nil {
+		t.Error("Expected error when repository fails")
+	}
+	if response != nil {
+		t.Error("Expected nil response when repository fails")
+	}
+}
+
+// Test using createTestUserServiceWithUsers helper
+func TestGetUserByID_WithPreexistingUser(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a test user and service with that user already in the repository
+	testUser := createActiveTestUser()
+	service := createTestUserServiceWithUsers(testUser)
+
+	// Should be able to retrieve the pre-existing user
+	retrievedUser, err := service.GetUserByID(ctx, testUser.ID)
+
+	if err != nil {
+		t.Errorf("Expected no error, got %v", err)
+	}
+	if retrievedUser == nil {
+		t.Error("Expected user to be found")
+	}
+	if retrievedUser != nil && retrievedUser.ID != testUser.ID {
+		t.Errorf("Expected user ID %s, got %s", testUser.ID, retrievedUser.ID)
+	}
+}
+
+// Test using createTestUserServiceWithAuth helper for custom authentication behavior
+func TestAuthenticateUser_WithCustomAuthManager(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a mock auth manager that always fails authentication
+	mockAuth := newMockAuthManager().(*mockAuthManager)
+	mockAuth.authenticateFunc = func(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error) {
+		return nil, errors.NewInvalidCredentialsError()
+	}
+
+	// Create service with the custom auth manager
+	service := createTestUserServiceWithAuth(mockAuth)
+
+	// Create and add a user to the service
+	testUser := createActiveTestUser()
+	if repo := getMockRepository(service); repo != nil {
+		repo.users[testUser.HashedEmail] = testUser.Clone()
+		repo.emailIndex[testUser.HashedEmail] = testUser.ID
+	}
+
+	authReq := &AuthenticateRequest{
+		Email:                  string(testUser.Email),
+		AuthenticationProvider: auth.ProviderTypePassword,
+		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+	}
+
+	result, err := service.AuthenticateUser(ctx, authReq)
+
+	// Should fail due to our custom auth manager
+	if err == nil {
+		t.Error("Expected authentication to fail with custom auth manager")
+	}
+	if result != nil {
+		t.Error("Expected nil result when authentication fails")
+	}
+
+	// Verify the custom auth manager was called
+	if mockAuth := getMockAuthManager(service); mockAuth != nil {
+		if len(mockAuth.providers) == 0 {
+			t.Error("Expected mock auth manager to have providers")
+		}
+	}
+}
+
+// Test using createIntegrationTestService for more realistic authentication testing
+func TestAuthenticateUser_IntegrationTest(t *testing.T) {
+	ctx := context.Background()
+
+	// Use integration test service with real auth manager but mock providers
+	service := createIntegrationTestService()
+
+	// Create a user with the service
+	createReq := &CreateUserRequest{
+		FirstName:              "John",
+		LastName:               "Doe",
+		Email:                  "john@example.com",
+		AuthenticationProvider: auth.ProviderTypePassword,
+		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+	}
+
+	user, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	// Activate user
+	_, err = service.ActivateUser(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Test authentication with integration service
+	authReq := &AuthenticateRequest{
+		Email:                  "john@example.com",
+		AuthenticationProvider: auth.ProviderTypePassword,
+		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+	}
+
+	authResult, err := service.AuthenticateUser(ctx, authReq)
+
+	if err != nil {
+		t.Errorf("Expected successful authentication, got error: %v", err)
+	}
+	if authResult == nil || authResult.User == nil {
+		t.Error("Expected authentication result with user")
 	}
 }
