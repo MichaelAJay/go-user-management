@@ -85,7 +85,7 @@ func NewProvider(
 }
 
 // Authenticate verifies password credentials against stored password data.
-func (p *Provider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+func (p *Provider) Authenticate(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -109,7 +109,7 @@ func (p *Provider) Authenticate(ctx context.Context, identifier string, credenti
 	return &auth.AuthenticationResult{
 		ProviderType:   auth.ProviderTypePassword,
 		ProviderUserID: identifier,
-		SessionData: map[string]interface{}{
+		SessionData: map[string]any{
 			"auth_method": "password",
 			"auth_time":   time.Now(),
 		},
@@ -117,7 +117,7 @@ func (p *Provider) Authenticate(ctx context.Context, identifier string, credenti
 }
 
 // ValidateCredentials validates password strength and requirements.
-func (p *Provider) ValidateCredentials(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error {
+func (p *Provider) ValidateCredentials(ctx context.Context, credentials any, userInfo *auth.UserInfo) error {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -157,7 +157,7 @@ func (p *Provider) ValidateCredentials(ctx context.Context, credentials interfac
 }
 
 // UpdateCredentials updates password credentials after verification.
-func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
+func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -198,7 +198,7 @@ func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCred
 }
 
 // PrepareCredentials hashes the password for secure storage.
-func (p *Provider) PrepareCredentials(ctx context.Context, credentials interface{}) (interface{}, error) {
+func (p *Provider) PrepareCredentials(ctx context.Context, credentials any) (any, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -237,7 +237,7 @@ func (p *Provider) PrepareCredentials(ctx context.Context, credentials interface
 
 // VerifyPassword verifies a password against stored password data.
 // This is a utility method used by the user service during authentication.
-func (p *Provider) VerifyPassword(ctx context.Context, storedData interface{}, password string) (bool, error) {
+func (p *Provider) VerifyPassword(ctx context.Context, storedData any, password string) (bool, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{

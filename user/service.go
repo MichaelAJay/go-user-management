@@ -437,7 +437,7 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		UserID:         userCopy.ID,
 		ProviderType:   req.AuthenticationProvider,
 		ProviderUserID: normalizedEmail,
-		SessionData: map[string]interface{}{
+		SessionData: map[string]any{
 			"auth_method": string(req.AuthenticationProvider),
 			"auth_time":   time.Now(),
 		},
@@ -1568,14 +1568,14 @@ func (s *userService) DeleteUser(ctx context.Context, userID string) error {
 
 // convertCredentials converts map-based credentials to provider-specific credential types.
 // This follows the Adapter pattern to convert between different credential representations.
-func (s *userService) convertCredentials(providerType auth.ProviderType, credentials interface{}) (interface{}, error) {
+func (s *userService) convertCredentials(providerType auth.ProviderType, credentials any) (any, error) {
 	// If credentials are already the correct type, return as-is
 	if credentials == nil {
 		return nil, errors.NewValidationError("credentials", "credentials cannot be nil")
 	}
 
 	// Handle map-based credentials (from API requests)
-	credMap, ok := credentials.(map[string]interface{})
+	credMap, ok := credentials.(map[string]any)
 	if !ok {
 		// If not a map, assume it's already the correct type
 		return credentials, nil

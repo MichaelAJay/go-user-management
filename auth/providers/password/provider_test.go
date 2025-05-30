@@ -147,16 +147,16 @@ func (t *mockTimer) Type() metrics.Type                   { return metrics.TypeT
 func (t *mockTimer) Tags() metrics.Tags                   { return nil }
 
 type mockConfig struct {
-	values map[string]interface{}
+	values map[string]any
 }
 
 func newMockConfig() *mockConfig {
 	return &mockConfig{
-		values: make(map[string]interface{}),
+		values: make(map[string]any),
 	}
 }
 
-func (c *mockConfig) Get(key string) (interface{}, bool) {
+func (c *mockConfig) Get(key string) (any, bool) {
 	val, ok := c.values[key]
 	return val, ok
 }
@@ -206,7 +206,7 @@ func (c *mockConfig) GetStringSlice(key string) ([]string, bool) {
 	return nil, false
 }
 
-func (c *mockConfig) Set(key string, value interface{}) error {
+func (c *mockConfig) Set(key string, value any) error {
 	c.values[key] = value
 	return nil
 }
@@ -574,8 +574,8 @@ func TestUpdateCredentials_InvalidCredentialTypes(t *testing.T) {
 
 	testCases := []struct {
 		name           string
-		oldCredentials interface{}
-		newCredentials interface{}
+		oldCredentials any
+		newCredentials any
 	}{
 		{"invalid_old", "invalid", validCredentials},
 		{"invalid_new", validCredentials, "invalid"},

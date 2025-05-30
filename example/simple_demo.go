@@ -100,11 +100,11 @@ func main() {
 		UserID:         "user-123",
 		ProviderType:   auth.ProviderTypePassword,
 		ProviderUserID: "john.doe@example.com",
-		SessionData: map[string]interface{}{
+		SessionData: map[string]any{
 			"auth_method": "password",
 			"login_time":  "2024-01-01T12:00:00Z",
 		},
-		Metadata: map[string]interface{}{
+		Metadata: map[string]any{
 			"ip_address": "192.168.1.1",
 			"user_agent": "Mozilla/5.0...",
 		},
@@ -166,7 +166,7 @@ func main() {
 	fmt.Println()
 	fmt.Println("type User struct {")
 	fmt.Println("    // ... other fields ...")
-	fmt.Println("    AuthenticationData  map[auth.ProviderType]interface{}")
+	fmt.Println("    AuthenticationData  map[auth.ProviderType]any")
 	fmt.Println("    PrimaryAuthProvider auth.ProviderType")
 	fmt.Println("}")
 	fmt.Println()

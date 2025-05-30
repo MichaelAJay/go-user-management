@@ -13,7 +13,7 @@ type CreateUserRequest struct {
 	FirstName              string            `json:"first_name" validate:"required,min=1,max=100"`
 	LastName               string            `json:"last_name" validate:"required,min=1,max=100"`
 	Email                  string            `json:"email" validate:"required,email,max=255"`
-	Credentials            interface{}       `json:"credentials" validate:"required"`
+	Credentials            any               `json:"credentials" validate:"required"`
 	AuthenticationProvider auth.ProviderType `json:"authentication_provider" validate:"required"`
 }
 
@@ -27,15 +27,15 @@ type UpdateProfileRequest struct {
 
 // UpdateCredentialsRequest represents the request to update a user's authentication credentials.
 type UpdateCredentialsRequest struct {
-	CurrentCredentials     interface{}       `json:"current_credentials" validate:"required"`
-	NewCredentials         interface{}       `json:"new_credentials" validate:"required"`
+	CurrentCredentials     any               `json:"current_credentials" validate:"required"`
+	NewCredentials         any               `json:"new_credentials" validate:"required"`
 	AuthenticationProvider auth.ProviderType `json:"authentication_provider" validate:"required"`
 }
 
 // AuthenticateRequest represents the request to authenticate a user.
 type AuthenticateRequest struct {
 	Email                  string            `json:"email" validate:"required,email"`
-	Credentials            interface{}       `json:"credentials" validate:"required"`
+	Credentials            any               `json:"credentials" validate:"required"`
 	AuthenticationProvider auth.ProviderType `json:"authentication_provider" validate:"required"`
 }
 

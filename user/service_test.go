@@ -25,7 +25,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				LastName:               "Doe",
 				Email:                  "john@example.com",
 				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+				Credentials:            map[string]any{"password": "StrongPass123!"},
 			},
 			wantErr: false,
 		},
@@ -42,7 +42,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				LastName:               "Doe",
 				Email:                  "john@example.com",
 				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+				Credentials:            map[string]any{"password": "StrongPass123!"},
 			},
 			wantErr: true,
 			errCode: errors.CodeEmptyField,
@@ -54,7 +54,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				LastName:               "Doe",
 				Email:                  "not-an-email",
 				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+				Credentials:            map[string]any{"password": "StrongPass123!"},
 			},
 			wantErr: true,
 			errCode: errors.CodeInvalidEmailFormat,
@@ -78,7 +78,7 @@ func TestCreateUser_Validation(t *testing.T) {
 				LastName:               "Doe",
 				Email:                  "john@example.com",
 				AuthenticationProvider: "unsupported",
-				Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+				Credentials:            map[string]any{"password": "StrongPass123!"},
 			},
 			wantErr: true,
 			errCode: errors.CodeUnsupportedProvider,
@@ -131,7 +131,7 @@ func TestCreateUser_DuplicateEmailScenarios(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	// Create first user
@@ -179,7 +179,7 @@ func TestAuthenticateUser_Comprehensive(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	user, err := service.CreateUser(ctx, createReq)
@@ -234,7 +234,7 @@ func TestAuthenticateUser_Comprehensive(t *testing.T) {
 			authReq := &AuthenticateRequest{
 				Email:                  tt.email,
 				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]interface{}{"password": tt.password},
+				Credentials:            map[string]any{"password": tt.password},
 			}
 
 			response, err := service.AuthenticateUser(ctx, authReq)
@@ -269,7 +269,7 @@ func TestAuthenticateUser_AccountLockout(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	user, err := service.CreateUser(ctx, createReq)
@@ -286,7 +286,7 @@ func TestAuthenticateUser_AccountLockout(t *testing.T) {
 	authReq := &AuthenticateRequest{
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "WrongPassword"},
+		Credentials:            map[string]any{"password": "WrongPassword"},
 	}
 
 	// Attempt authentication up to lockout threshold
@@ -311,7 +311,7 @@ func TestAuthenticateUser_AccountLockout(t *testing.T) {
 	correctAuthReq := &AuthenticateRequest{
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	_, err = service.AuthenticateUser(ctx, correctAuthReq)
@@ -331,7 +331,7 @@ func TestAuthenticateUser_ConcurrentAttempts(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	user, err := service.CreateUser(ctx, createReq)
@@ -352,7 +352,7 @@ func TestAuthenticateUser_ConcurrentAttempts(t *testing.T) {
 	authReq := &AuthenticateRequest{
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "WrongPassword"},
+		Credentials:            map[string]any{"password": "WrongPassword"},
 	}
 
 	for i := 0; i < numGoroutines; i++ {
@@ -401,7 +401,7 @@ func TestUpdateProfile_VersionConflict(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	user, err := service.CreateUser(ctx, createReq)
@@ -467,7 +467,7 @@ func TestCreateUser_RepositoryErrors(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	response, err := service.CreateUser(ctx, req)
@@ -498,7 +498,7 @@ func TestCreateUser_RepositoryErrorsWithHelper(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	response, err := service.CreateUser(ctx, req)
@@ -556,7 +556,7 @@ func TestAuthenticateUser_WithCustomAuthManager(t *testing.T) {
 	authReq := &AuthenticateRequest{
 		Email:                  string(testUser.Email),
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	result, err := service.AuthenticateUser(ctx, authReq)
@@ -590,7 +590,7 @@ func TestAuthenticateUser_IntegrationTest(t *testing.T) {
 		LastName:               "Doe",
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	user, err := service.CreateUser(ctx, createReq)
@@ -608,7 +608,7 @@ func TestAuthenticateUser_IntegrationTest(t *testing.T) {
 	authReq := &AuthenticateRequest{
 		Email:                  "john@example.com",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]interface{}{"password": "StrongPass123!"},
+		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
 
 	authResult, err := service.AuthenticateUser(ctx, authReq)

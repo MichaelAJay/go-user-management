@@ -22,7 +22,7 @@ func createTestUser() *User {
 		"john.doe@example.com",
 		"hashed_email",
 		auth.ProviderTypePassword,
-		map[string]interface{}{"password": "hashed_password"},
+		map[string]any{"password": "hashed_password"},
 	)
 }
 
@@ -277,12 +277,12 @@ func (m *mockLogger) WithContext(ctx context.Context) logger.Logger {
 
 // Mock Cache Implementation
 type mockCache struct {
-	data map[string]interface{}
+	data map[string]any
 }
 
 func newMockCache() *mockCache {
 	return &mockCache{
-		data: make(map[string]interface{}),
+		data: make(map[string]any),
 	}
 }
 
@@ -293,7 +293,7 @@ func (m *mockCache) Get(ctx context.Context, key string) (any, bool, error) {
 	return nil, false, errors.ErrCacheMiss
 }
 
-func (m *mockCache) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (m *mockCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	m.data[key] = value
 	return nil
 }
@@ -304,7 +304,7 @@ func (m *mockCache) Delete(ctx context.Context, key string) error {
 }
 
 func (m *mockCache) Clear(ctx context.Context) error {
-	m.data = make(map[string]interface{})
+	m.data = make(map[string]any)
 	return nil
 }
 
@@ -325,8 +325,8 @@ func (m *mockCache) Close() error {
 	return nil
 }
 
-func (m *mockCache) GetMany(ctx context.Context, keys []string) (map[string]interface{}, error) {
-	values := make(map[string]interface{}, len(keys))
+func (m *mockCache) GetMany(ctx context.Context, keys []string) (map[string]any, error) {
+	values := make(map[string]any, len(keys))
 	for _, key := range keys {
 		if val, exists := m.data[key]; exists {
 			values[key] = val
@@ -335,7 +335,7 @@ func (m *mockCache) GetMany(ctx context.Context, keys []string) (map[string]inte
 	return values, nil
 }
 
-func (m *mockCache) SetMany(ctx context.Context, items map[string]interface{}, ttl time.Duration) error {
+func (m *mockCache) SetMany(ctx context.Context, items map[string]any, ttl time.Duration) error {
 	for key, value := range items {
 		m.data[key] = value
 	}
@@ -363,12 +363,12 @@ func (m *mockCache) GetMetrics() *cache.CacheMetricsSnapshot {
 
 // Mock Config Implementation
 type mockConfig struct {
-	values map[string]interface{}
+	values map[string]any
 }
 
 func newMockConfig() *mockConfig {
 	return &mockConfig{
-		values: map[string]interface{}{
+		values: map[string]any{
 			"user_service.max_login_attempts":      5,
 			"user_service.lockout_duration":        "30m",
 			"user_service.cache_user_ttl":          "15m",
@@ -504,9 +504,9 @@ func (m *mockTimer) With(tags metrics.Tags) metrics.Timer { return m }
 type mockAuthManager struct {
 	providers               map[auth.ProviderType]auth.AuthenticationProvider
 	authenticateFunc        func(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error)
-	validateCredentialsFunc func(ctx context.Context, providerType auth.ProviderType, credentials interface{}, userInfo *auth.UserInfo) error
-	updateCredentialsFunc   func(ctx context.Context, req *auth.CredentialUpdateRequest) (interface{}, error)
-	prepareCredentialsFunc  func(ctx context.Context, providerType auth.ProviderType, credentials interface{}) (interface{}, error)
+	validateCredentialsFunc func(ctx context.Context, providerType auth.ProviderType, credentials any, userInfo *auth.UserInfo) error
+	updateCredentialsFunc   func(ctx context.Context, req *auth.CredentialUpdateRequest) (any, error)
+	prepareCredentialsFunc  func(ctx context.Context, providerType auth.ProviderType, credentials any) (any, error)
 	getProviderFunc         func(providerType auth.ProviderType) (auth.AuthenticationProvider, error)
 }
 
@@ -544,21 +544,21 @@ func (m *mockAuthManager) Authenticate(ctx context.Context, req *auth.Authentica
 	}, nil
 }
 
-func (m *mockAuthManager) ValidateCredentials(ctx context.Context, providerType auth.ProviderType, credentials interface{}, userInfo *auth.UserInfo) error {
+func (m *mockAuthManager) ValidateCredentials(ctx context.Context, providerType auth.ProviderType, credentials any, userInfo *auth.UserInfo) error {
 	if m.validateCredentialsFunc != nil {
 		return m.validateCredentialsFunc(ctx, providerType, credentials, userInfo)
 	}
 	return nil
 }
 
-func (m *mockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) (interface{}, error) {
+func (m *mockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) (any, error) {
 	if m.updateCredentialsFunc != nil {
 		return m.updateCredentialsFunc(ctx, req)
 	}
 	return req.NewCredentials, nil
 }
 
-func (m *mockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials interface{}) (interface{}, error) {
+func (m *mockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials any) (any, error) {
 	if m.prepareCredentialsFunc != nil {
 		return m.prepareCredentialsFunc(ctx, providerType, credentials)
 	}
@@ -580,16 +580,16 @@ func (m *mockAuthManager) HasProvider(providerType auth.ProviderType) bool {
 
 // Mock Password Provider Implementation for testing password verification
 type mockPasswordProvider struct {
-	authenticateFunc        func(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error)
-	validateCredentialsFunc func(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error
-	updateCredentialsFunc   func(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error)
-	prepareCredentialsFunc  func(ctx context.Context, credentials interface{}) (interface{}, error)
-	verifyPasswordFunc      func(ctx context.Context, storedAuthData interface{}, password string) (bool, error)
+	authenticateFunc        func(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error)
+	validateCredentialsFunc func(ctx context.Context, credentials any, userInfo *auth.UserInfo) error
+	updateCredentialsFunc   func(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error)
+	prepareCredentialsFunc  func(ctx context.Context, credentials any) (any, error)
+	verifyPasswordFunc      func(ctx context.Context, storedAuthData any, password string) (bool, error)
 }
 
 func newMockPasswordProvider() *mockPasswordProvider {
 	return &mockPasswordProvider{
-		authenticateFunc: func(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+		authenticateFunc: func(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error) {
 			// Default: check for correct test password
 			if creds, ok := credentials.(*password.PasswordCredentials); ok {
 				if creds.Password == "StrongPass123!" {
@@ -602,21 +602,21 @@ func newMockPasswordProvider() *mockPasswordProvider {
 			}
 			return nil, errors.NewInvalidCredentialsError()
 		},
-		validateCredentialsFunc: func(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error {
+		validateCredentialsFunc: func(ctx context.Context, credentials any, userInfo *auth.UserInfo) error {
 			if credentials == nil {
 				return errors.NewValidationError("credentials", "credentials required")
 			}
 			return nil
 		},
-		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
+		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error) {
 			return newCredentials, nil
 		},
-		prepareCredentialsFunc: func(ctx context.Context, credentials interface{}) (interface{}, error) {
+		prepareCredentialsFunc: func(ctx context.Context, credentials any) (any, error) {
 			return credentials, nil
 		},
-		verifyPasswordFunc: func(ctx context.Context, storedAuthData interface{}, password string) (bool, error) {
+		verifyPasswordFunc: func(ctx context.Context, storedAuthData any, password string) (bool, error) {
 			// Default verification logic
-			if storedData, ok := storedAuthData.(map[string]interface{}); ok {
+			if storedData, ok := storedAuthData.(map[string]any); ok {
 				if storedPassword, exists := storedData["password"]; exists {
 					return storedPassword == "hashed_password" && password == "StrongPass123!", nil
 				}
@@ -626,28 +626,28 @@ func newMockPasswordProvider() *mockPasswordProvider {
 	}
 }
 
-func (m *mockPasswordProvider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*auth.AuthenticationResult, error) {
+func (m *mockPasswordProvider) Authenticate(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error) {
 	if m.authenticateFunc != nil {
 		return m.authenticateFunc(ctx, identifier, credentials)
 	}
 	return nil, errors.NewInvalidCredentialsError()
 }
 
-func (m *mockPasswordProvider) ValidateCredentials(ctx context.Context, credentials interface{}, userInfo *auth.UserInfo) error {
+func (m *mockPasswordProvider) ValidateCredentials(ctx context.Context, credentials any, userInfo *auth.UserInfo) error {
 	if m.validateCredentialsFunc != nil {
 		return m.validateCredentialsFunc(ctx, credentials, userInfo)
 	}
 	return nil
 }
 
-func (m *mockPasswordProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
+func (m *mockPasswordProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error) {
 	if m.updateCredentialsFunc != nil {
 		return m.updateCredentialsFunc(ctx, userID, oldCredentials, newCredentials)
 	}
 	return newCredentials, nil
 }
 
-func (m *mockPasswordProvider) PrepareCredentials(ctx context.Context, credentials interface{}) (interface{}, error) {
+func (m *mockPasswordProvider) PrepareCredentials(ctx context.Context, credentials any) (any, error) {
 	if m.prepareCredentialsFunc != nil {
 		return m.prepareCredentialsFunc(ctx, credentials)
 	}
@@ -662,7 +662,7 @@ func (m *mockPasswordProvider) SupportsCredentialUpdate() bool {
 	return true
 }
 
-func (m *mockPasswordProvider) VerifyPassword(ctx context.Context, storedAuthData interface{}, password string) (bool, error) {
+func (m *mockPasswordProvider) VerifyPassword(ctx context.Context, storedAuthData any, password string) (bool, error) {
 	if m.verifyPasswordFunc != nil {
 		return m.verifyPasswordFunc(ctx, storedAuthData, password)
 	}

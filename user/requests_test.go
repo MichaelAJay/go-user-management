@@ -102,7 +102,7 @@ func TestUser_ToUserResponse(t *testing.T) {
 	user.LastLoginAt = timePtr(time.Now())
 
 	// Add multiple authentication providers
-	user.AddAuthenticationProvider(auth.ProviderTypeOAuth, map[string]interface{}{"token": "oauth_token"})
+	user.AddAuthenticationProvider(auth.ProviderTypeOAuth, map[string]any{"token": "oauth_token"})
 
 	response := user.ToUserResponse(nil)
 
@@ -233,7 +233,7 @@ func TestCreateUserRequest_Validation(t *testing.T) {
 				FirstName:              "John",
 				LastName:               "Doe",
 				Email:                  "john.doe@example.com",
-				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				Credentials:            map[string]any{"password": "securepassword123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: false,
@@ -243,7 +243,7 @@ func TestCreateUserRequest_Validation(t *testing.T) {
 			req: CreateUserRequest{
 				LastName:               "Doe",
 				Email:                  "john.doe@example.com",
-				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				Credentials:            map[string]any{"password": "securepassword123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -254,7 +254,7 @@ func TestCreateUserRequest_Validation(t *testing.T) {
 			req: CreateUserRequest{
 				FirstName:              "John",
 				Email:                  "john.doe@example.com",
-				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				Credentials:            map[string]any{"password": "securepassword123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -266,7 +266,7 @@ func TestCreateUserRequest_Validation(t *testing.T) {
 				FirstName:              "John",
 				LastName:               "Doe",
 				Email:                  "invalid-email",
-				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				Credentials:            map[string]any{"password": "securepassword123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -289,7 +289,7 @@ func TestCreateUserRequest_Validation(t *testing.T) {
 				FirstName:   "John",
 				LastName:    "Doe",
 				Email:       "john.doe@example.com",
-				Credentials: map[string]interface{}{"password": "securepassword123"},
+				Credentials: map[string]any{"password": "securepassword123"},
 			},
 			wantErr: true,
 			errMsg:  "authentication provider is required",
@@ -300,7 +300,7 @@ func TestCreateUserRequest_Validation(t *testing.T) {
 				FirstName:              strings.Repeat("a", 101),
 				LastName:               "Doe",
 				Email:                  "john.doe@example.com",
-				Credentials:            map[string]interface{}{"password": "securepassword123"},
+				Credentials:            map[string]any{"password": "securepassword123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -397,8 +397,8 @@ func TestUpdateCredentialsRequest_Validation(t *testing.T) {
 		{
 			name: "valid request",
 			req: UpdateCredentialsRequest{
-				CurrentCredentials:     map[string]interface{}{"password": "oldpassword"},
-				NewCredentials:         map[string]interface{}{"password": "newpassword"},
+				CurrentCredentials:     map[string]any{"password": "oldpassword"},
+				NewCredentials:         map[string]any{"password": "newpassword"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: false,
@@ -406,7 +406,7 @@ func TestUpdateCredentialsRequest_Validation(t *testing.T) {
 		{
 			name: "missing current credentials",
 			req: UpdateCredentialsRequest{
-				NewCredentials:         map[string]interface{}{"password": "newpassword"},
+				NewCredentials:         map[string]any{"password": "newpassword"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -415,7 +415,7 @@ func TestUpdateCredentialsRequest_Validation(t *testing.T) {
 		{
 			name: "missing new credentials",
 			req: UpdateCredentialsRequest{
-				CurrentCredentials:     map[string]interface{}{"password": "oldpassword"},
+				CurrentCredentials:     map[string]any{"password": "oldpassword"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -424,8 +424,8 @@ func TestUpdateCredentialsRequest_Validation(t *testing.T) {
 		{
 			name: "missing auth provider",
 			req: UpdateCredentialsRequest{
-				CurrentCredentials: map[string]interface{}{"password": "oldpassword"},
-				NewCredentials:     map[string]interface{}{"password": "newpassword"},
+				CurrentCredentials: map[string]any{"password": "oldpassword"},
+				NewCredentials:     map[string]any{"password": "newpassword"},
 			},
 			wantErr: true,
 			errMsg:  "authentication provider is required",
@@ -459,7 +459,7 @@ func TestAuthenticateRequest_Validation(t *testing.T) {
 			name: "valid request",
 			req: AuthenticateRequest{
 				Email:                  "john.doe@example.com",
-				Credentials:            map[string]interface{}{"password": "password123"},
+				Credentials:            map[string]any{"password": "password123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: false,
@@ -468,7 +468,7 @@ func TestAuthenticateRequest_Validation(t *testing.T) {
 			name: "invalid email",
 			req: AuthenticateRequest{
 				Email:                  "invalid-email",
-				Credentials:            map[string]interface{}{"password": "password123"},
+				Credentials:            map[string]any{"password": "password123"},
 				AuthenticationProvider: auth.ProviderTypePassword,
 			},
 			wantErr: true,
@@ -487,7 +487,7 @@ func TestAuthenticateRequest_Validation(t *testing.T) {
 			name: "missing auth provider",
 			req: AuthenticateRequest{
 				Email:       "john.doe@example.com",
-				Credentials: map[string]interface{}{"password": "password123"},
+				Credentials: map[string]any{"password": "password123"},
 			},
 			wantErr: true,
 			errMsg:  "authentication provider is required",
@@ -605,7 +605,7 @@ func TestAuthenticationResponse_Structure(t *testing.T) {
 	authResult := &auth.AuthenticationResult{
 		UserID:       user.ID,
 		ProviderType: auth.ProviderTypePassword,
-		SessionData:  map[string]interface{}{"auth_time": time.Now()},
+		SessionData:  map[string]any{"auth_time": time.Now()},
 	}
 
 	response := &AuthenticationResponse{

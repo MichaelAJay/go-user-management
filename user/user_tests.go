@@ -244,7 +244,7 @@ func TestUser_AuthenticationDataManagement(t *testing.T) {
 	}
 
 	// Test adding new provider
-	oauthData := map[string]interface{}{"token": "oauth_token", "expires": time.Now()}
+	oauthData := map[string]any{"token": "oauth_token", "expires": time.Now()}
 	user.AddAuthenticationProvider(auth.ProviderTypeOAuth, oauthData)
 
 	if !user.HasAuthenticationProvider(auth.ProviderTypeOAuth) {
@@ -256,7 +256,7 @@ func TestUser_AuthenticationDataManagement(t *testing.T) {
 		t.Error("Expected OAuth data to exist")
 	}
 
-	retrievedMap, ok := retrievedData.(map[string]interface{})
+	retrievedMap, ok := retrievedData.(map[string]any)
 	if !ok {
 		t.Error("Expected OAuth data to be a map")
 	} else if retrievedMap["token"] != "oauth_token" {
@@ -264,7 +264,7 @@ func TestUser_AuthenticationDataManagement(t *testing.T) {
 	}
 
 	// Test updating existing provider
-	newPasswordData := map[string]interface{}{"password": "new_hashed_password"}
+	newPasswordData := map[string]any{"password": "new_hashed_password"}
 	user.UpdateAuthenticationData(auth.ProviderTypePassword, newPasswordData)
 
 	updatedData, exists := user.GetAuthenticationData(auth.ProviderTypePassword)
@@ -272,7 +272,7 @@ func TestUser_AuthenticationDataManagement(t *testing.T) {
 		t.Error("Expected password data to still exist after update")
 	}
 
-	updatedMap, ok := updatedData.(map[string]interface{})
+	updatedMap, ok := updatedData.(map[string]any)
 	if !ok {
 		t.Error("Expected password data to be a map")
 	} else if updatedMap["password"] != "new_hashed_password" {
