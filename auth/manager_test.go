@@ -13,14 +13,14 @@ import (
 // MockAuthenticationProvider implements AuthenticationProvider for testing
 type MockAuthenticationProvider struct {
 	providerType             ProviderType
-	authenticateFunc         func(ctx context.Context, identifier string, credentials interface{}) (*AuthenticationResult, error)
-	validateCredentialsFunc  func(ctx context.Context, credentials interface{}, userInfo *UserInfo) error
-	updateCredentialsFunc    func(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error)
-	prepareCredentialsFunc   func(ctx context.Context, credentials interface{}) (interface{}, error)
+	authenticateFunc         func(ctx context.Context, identifier string, credentials any) (*AuthenticationResult, error)
+	validateCredentialsFunc  func(ctx context.Context, credentials any, userInfo *UserInfo) error
+	updateCredentialsFunc    func(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error)
+	prepareCredentialsFunc   func(ctx context.Context, credentials any) (any, error)
 	supportsCredentialUpdate bool
 }
 
-func (m *MockAuthenticationProvider) Authenticate(ctx context.Context, identifier string, credentials interface{}) (*AuthenticationResult, error) {
+func (m *MockAuthenticationProvider) Authenticate(ctx context.Context, identifier string, credentials any) (*AuthenticationResult, error) {
 	if m.authenticateFunc != nil {
 		return m.authenticateFunc(ctx, identifier, credentials)
 	}
@@ -30,21 +30,21 @@ func (m *MockAuthenticationProvider) Authenticate(ctx context.Context, identifie
 	}, nil
 }
 
-func (m *MockAuthenticationProvider) ValidateCredentials(ctx context.Context, credentials interface{}, userInfo *UserInfo) error {
+func (m *MockAuthenticationProvider) ValidateCredentials(ctx context.Context, credentials any, userInfo *UserInfo) error {
 	if m.validateCredentialsFunc != nil {
 		return m.validateCredentialsFunc(ctx, credentials, userInfo)
 	}
 	return nil
 }
 
-func (m *MockAuthenticationProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
+func (m *MockAuthenticationProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error) {
 	if m.updateCredentialsFunc != nil {
 		return m.updateCredentialsFunc(ctx, userID, oldCredentials, newCredentials)
 	}
 	return newCredentials, nil
 }
 
-func (m *MockAuthenticationProvider) PrepareCredentials(ctx context.Context, credentials interface{}) (interface{}, error) {
+func (m *MockAuthenticationProvider) PrepareCredentials(ctx context.Context, credentials any) (any, error) {
 	if m.prepareCredentialsFunc != nil {
 		return m.prepareCredentialsFunc(ctx, credentials)
 	}
@@ -363,7 +363,7 @@ func TestManager_Authenticate(t *testing.T) {
 
 	provider := &MockAuthenticationProvider{
 		providerType: ProviderTypePassword,
-		authenticateFunc: func(ctx context.Context, identifier string, credentials interface{}) (*AuthenticationResult, error) {
+		authenticateFunc: func(ctx context.Context, identifier string, credentials any) (*AuthenticationResult, error) {
 			return expectedResult, nil
 		},
 	}
@@ -372,7 +372,7 @@ func TestManager_Authenticate(t *testing.T) {
 
 	req := &AuthenticationRequest{
 		Identifier:   "test@example.com",
-		Credentials:  map[string]interface{}{"password": "test123"},
+		Credentials:  map[string]any{"password": "test123"},
 		ProviderType: ProviderTypePassword,
 	}
 
@@ -403,7 +403,7 @@ func TestManager_Authenticate_ProviderNotFound(t *testing.T) {
 
 	req := &AuthenticationRequest{
 		Identifier:   "test@example.com",
-		Credentials:  map[string]interface{}{"password": "test123"},
+		Credentials:  map[string]any{"password": "test123"},
 		ProviderType: ProviderTypePassword,
 	}
 
@@ -425,7 +425,7 @@ func TestManager_Authenticate_ProviderError(t *testing.T) {
 
 	provider := &MockAuthenticationProvider{
 		providerType: ProviderTypePassword,
-		authenticateFunc: func(ctx context.Context, identifier string, credentials interface{}) (*AuthenticationResult, error) {
+		authenticateFunc: func(ctx context.Context, identifier string, credentials any) (*AuthenticationResult, error) {
 			return nil, errors.NewInvalidCredentialsError()
 		},
 	}
@@ -434,7 +434,7 @@ func TestManager_Authenticate_ProviderError(t *testing.T) {
 
 	req := &AuthenticationRequest{
 		Identifier:   "test@example.com",
-		Credentials:  map[string]interface{}{"password": "wrong"},
+		Credentials:  map[string]any{"password": "wrong"},
 		ProviderType: ProviderTypePassword,
 	}
 
@@ -456,7 +456,7 @@ func TestManager_ValidateCredentials(t *testing.T) {
 
 	provider := &MockAuthenticationProvider{
 		providerType: ProviderTypePassword,
-		validateCredentialsFunc: func(ctx context.Context, credentials interface{}, userInfo *UserInfo) error {
+		validateCredentialsFunc: func(ctx context.Context, credentials any, userInfo *UserInfo) error {
 			return nil
 		},
 	}
@@ -470,7 +470,7 @@ func TestManager_ValidateCredentials(t *testing.T) {
 		Email:     "john.doe@example.com",
 	}
 
-	err := manager.ValidateCredentials(context.Background(), ProviderTypePassword, map[string]interface{}{"password": "test123"}, userInfo)
+	err := manager.ValidateCredentials(context.Background(), ProviderTypePassword, map[string]any{"password": "test123"}, userInfo)
 	if err != nil {
 		t.Errorf("Expected no error during credential validation, got %v", err)
 	}
@@ -486,7 +486,7 @@ func TestManager_ValidateCredentials_ProviderNotFound(t *testing.T) {
 		Email:  "john.doe@example.com",
 	}
 
-	err := manager.ValidateCredentials(context.Background(), ProviderTypePassword, map[string]interface{}{"password": "test123"}, userInfo)
+	err := manager.ValidateCredentials(context.Background(), ProviderTypePassword, map[string]any{"password": "test123"}, userInfo)
 	if err == nil {
 		t.Error("Expected error when provider not found")
 	}
@@ -500,7 +500,7 @@ func TestManager_UpdateCredentials(t *testing.T) {
 	provider := &MockAuthenticationProvider{
 		providerType:             ProviderTypePassword,
 		supportsCredentialUpdate: true,
-		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials interface{}) (interface{}, error) {
+		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error) {
 			return newCredentials, nil
 		},
 	}
@@ -509,8 +509,8 @@ func TestManager_UpdateCredentials(t *testing.T) {
 
 	req := &CredentialUpdateRequest{
 		UserID:         "test-user-id",
-		OldCredentials: map[string]interface{}{"password": "old123"},
-		NewCredentials: map[string]interface{}{"password": "new123"},
+		OldCredentials: map[string]any{"password": "old123"},
+		NewCredentials: map[string]any{"password": "new123"},
 		ProviderType:   ProviderTypePassword,
 	}
 
@@ -537,8 +537,8 @@ func TestManager_UpdateCredentials_NotSupported(t *testing.T) {
 
 	req := &CredentialUpdateRequest{
 		UserID:         "test-user-id",
-		OldCredentials: map[string]interface{}{"token": "old_token"},
-		NewCredentials: map[string]interface{}{"token": "new_token"},
+		OldCredentials: map[string]any{"token": "old_token"},
+		NewCredentials: map[string]any{"token": "new_token"},
 		ProviderType:   ProviderTypeOAuth,
 	}
 
@@ -555,14 +555,14 @@ func TestManager_PrepareCredentials(t *testing.T) {
 
 	provider := &MockAuthenticationProvider{
 		providerType: ProviderTypePassword,
-		prepareCredentialsFunc: func(ctx context.Context, credentials interface{}) (interface{}, error) {
+		prepareCredentialsFunc: func(ctx context.Context, credentials any) (any, error) {
 			return "prepared_credentials", nil
 		},
 	}
 
 	manager.RegisterProvider(provider)
 
-	result, err := manager.PrepareCredentials(context.Background(), ProviderTypePassword, map[string]interface{}{"password": "test123"})
+	result, err := manager.PrepareCredentials(context.Background(), ProviderTypePassword, map[string]any{"password": "test123"})
 	if err != nil {
 		t.Errorf("Expected no error during credential preparation, got %v", err)
 	}
