@@ -432,7 +432,12 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		}
 
 		// Update user in repository
-		s.repository.Update(ctx, userCopy)
+		if err := s.repository.Update(ctx, userCopy); err != nil {
+			s.logger.Error("Failed to update user after failed authentication",
+				logger.Field{Key: "error", Value: err.Error()},
+				logger.Field{Key: "user_id", Value: userCopy.ID})
+			// Continue with authentication failure response despite repository error
+		}
 
 		s.logger.Warn("Invalid password for user authentication",
 			logger.Field{Key: "user_id", Value: userCopy.ID},
@@ -1055,15 +1060,18 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 		return nil, errors.NewAppError(errors.CodeUserSuspended, "Cannot activate suspended user")
 	}
 
+	// Clone user to avoid race conditions
+	userCopy := user.Clone()
+
 	// Activate user using business logic
-	if err := user.ActivateAccount(); err != nil {
+	if err := userCopy.ActivateAccount(); err != nil {
 		return nil, err
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to activate user",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -1076,7 +1084,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User activated successfully", logger.Field{Key: "user_id", Value: userID})
 	counter := s.metrics.Counter(metrics.Options{
@@ -1084,7 +1092,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	return userCopy.ToUserResponse(s.encrypter), nil
 }
 
 // SuspendUser suspends a user account
@@ -1128,15 +1136,18 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 		return user.ToUserResponse(s.encrypter), nil
 	}
 
+	// Clone user to avoid race conditions
+	userCopy := user.Clone()
+
 	// Suspend user using business logic
-	if err := user.SuspendAccount(reason); err != nil {
+	if err := userCopy.SuspendAccount(reason); err != nil {
 		return nil, err
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to suspend user",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -1149,7 +1160,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User suspended successfully",
 		logger.Field{Key: "user_id", Value: userID},
@@ -1159,7 +1170,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	return userCopy.ToUserResponse(s.encrypter), nil
 }
 
 // DeactivateUser deactivates a user account
@@ -1199,15 +1210,18 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 		return user.ToUserResponse(s.encrypter), nil
 	}
 
+	// Clone user to avoid race conditions
+	userCopy := user.Clone()
+
 	// Deactivate user using business logic
-	if err := user.DeactivateAccount(reason); err != nil {
+	if err := userCopy.DeactivateAccount(reason); err != nil {
 		return nil, err
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to deactivate user",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -1220,7 +1234,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User deactivated successfully",
 		logger.Field{Key: "user_id", Value: userID},
@@ -1230,7 +1244,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	return userCopy.ToUserResponse(s.encrypter), nil
 }
 
 // LockUser locks a user account
@@ -1269,21 +1283,24 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
 	}
 
+	// Clone user to avoid race conditions
+	userCopy := user.Clone()
+
 	// Lock user account using business logic
 	if until != nil {
-		if err := user.LockAccountTemporarily(*until); err != nil {
+		if err := userCopy.LockAccountTemporarily(*until); err != nil {
 			return nil, err
 		}
 	} else {
-		if err := user.LockAccountPermanently(); err != nil {
+		if err := userCopy.LockAccountPermanently(); err != nil {
 			return nil, err
 		}
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to lock user",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -1296,7 +1313,7 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User locked successfully",
 		logger.Field{Key: "user_id", Value: userID},
@@ -1306,7 +1323,7 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	return userCopy.ToUserResponse(s.encrypter), nil
 }
 
 // UnlockUser unlocks a user account
@@ -1349,13 +1366,16 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 		return user.ToUserResponse(s.encrypter), nil
 	}
 
+	// Clone user to avoid race conditions
+	userCopy := user.Clone()
+
 	// Unlock user account
-	user.UnlockAccount()
+	userCopy.UnlockAccount()
 
 	// Save updated user
-	if err := s.repository.Update(ctx, user); err != nil {
+	if err := s.repository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(user.Version, user.Version)
+			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
 		s.logger.Error("Failed to unlock user",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -1368,7 +1388,7 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	}
 
 	// Update cache
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, userCopy)
 
 	s.logger.Info("User unlocked successfully", logger.Field{Key: "user_id", Value: userID})
 	counter := s.metrics.Counter(metrics.Options{
@@ -1376,7 +1396,7 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	return userCopy.ToUserResponse(s.encrypter), nil
 }
 
 // ListUsers retrieves users with pagination and filtering
