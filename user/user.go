@@ -164,8 +164,7 @@ func (u *User) CanAuthenticate() bool {
 // This method is used when a login attempt fails.
 func (u *User) IncrementLoginAttempts() {
 	u.LoginAttempts++
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // ResetLoginAttempts resets the login attempt counter to zero
@@ -173,8 +172,7 @@ func (u *User) IncrementLoginAttempts() {
 func (u *User) ResetLoginAttempts() {
 	u.LoginAttempts = 0
 	u.LockedUntil = nil
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // LockAccount locks the user account until the specified time.
@@ -187,8 +185,7 @@ func (u *User) LockAccount(until *time.Time) {
 		// Temporary lock - set until time
 		u.LockedUntil = until
 	}
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // UnlockAccount unlocks the user account and resets login attempts
@@ -205,8 +202,7 @@ func (u *User) UnlockAccount() {
 func (u *User) UpdateLastLogin() {
 	now := time.Now()
 	u.LastLoginAt = &now
-	u.UpdatedAt = now
-	u.Version++
+	u.updateMetadata()
 }
 
 // Activate activates the user account in memory.
@@ -214,29 +210,25 @@ func (u *User) UpdateLastLogin() {
 // for atomic persistence, or call UserRepository.Update() after this method.
 func (u *User) Activate() {
 	u.Status = UserStatusActive
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // Suspend suspends the user account
 func (u *User) Suspend() {
 	u.Status = UserStatusSuspended
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // Deactivate deactivates the user account
 func (u *User) Deactivate() {
 	u.Status = UserStatusDeactivated
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // UpdateProfile updates the user's profile information
 // This method handles version increment for optimistic locking
 func (u *User) UpdateProfile() {
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // UpdateAuthenticationData updates the user's authentication data for a specific provider
@@ -246,8 +238,7 @@ func (u *User) UpdateAuthenticationData(providerType auth.ProviderType, authData
 		u.AuthenticationData = make(map[auth.ProviderType]any)
 	}
 	u.AuthenticationData[providerType] = authData
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // GetAuthenticationData returns the authentication data for a specific provider
@@ -271,17 +262,200 @@ func (u *User) AddAuthenticationProvider(providerType auth.ProviderType, authDat
 		u.AuthenticationData = make(map[auth.ProviderType]any)
 	}
 	u.AuthenticationData[providerType] = authData
-	u.UpdatedAt = time.Now()
-	u.Version++
+	u.updateMetadata()
 }
 
 // RemoveAuthenticationProvider removes an authentication provider from the user
 func (u *User) RemoveAuthenticationProvider(providerType auth.ProviderType) {
 	if u.AuthenticationData != nil {
 		delete(u.AuthenticationData, providerType)
-		u.UpdatedAt = time.Now()
-		u.Version++
+		u.updateMetadata()
 	}
+}
+
+// UpdateProfileData updates the user's profile data with encrypted values
+// This method encapsulates the business rule that email changes require re-verification
+func (u *User) UpdateProfileData(encryptedFirstName, encryptedLastName, encryptedEmail []byte, newHashedEmail string) error {
+	// Validate that at least one field is being updated
+	if encryptedFirstName == nil && encryptedLastName == nil && encryptedEmail == nil {
+		return errors.NewValidationError("profile_data", "at least one field must be updated")
+	}
+
+	// Validate email consistency - if email is provided, hashed email must also be provided
+	if (encryptedEmail != nil && newHashedEmail == "") || (encryptedEmail == nil && newHashedEmail != "") {
+		return errors.NewValidationError("email_data", "encrypted email and hashed email must be provided together")
+	}
+
+	emailChanged := false
+
+	if encryptedFirstName != nil {
+		u.FirstName = encryptedFirstName
+	}
+
+	if encryptedLastName != nil {
+		u.LastName = encryptedLastName
+	}
+
+	if encryptedEmail != nil && newHashedEmail != "" {
+		u.Email = encryptedEmail
+		u.HashedEmail = newHashedEmail
+		emailChanged = true
+	}
+
+	// Business rule: email change requires re-verification for active users
+	if emailChanged && u.Status == UserStatusActive {
+		u.Status = UserStatusPendingVerification
+	}
+
+	u.updateMetadata()
+	return nil
+}
+
+// UpdateCredentialData updates the user's authentication data and resets security-related fields
+// This method encapsulates the business rule that credential updates reset login attempts
+func (u *User) UpdateCredentialData(providerType auth.ProviderType, newAuthData any) error {
+	// Validate inputs
+	if newAuthData == nil {
+		return errors.NewValidationError("auth_data", "authentication data cannot be nil")
+	}
+
+	if u.AuthenticationData == nil {
+		u.AuthenticationData = make(map[auth.ProviderType]any)
+	}
+	u.AuthenticationData[providerType] = newAuthData
+
+	// Business rule: credential updates reset login attempts and unlock account
+	u.LoginAttempts = 0
+	u.LockedUntil = nil
+
+	u.updateMetadata()
+	return nil
+}
+
+// ProcessSuccessfulAuthentication handles the state changes after successful authentication
+// This method encapsulates the business rules for successful login
+func (u *User) ProcessSuccessfulAuthentication() {
+	u.ResetLoginAttempts()
+	u.UpdateLastLogin()
+}
+
+// ProcessFailedAuthentication handles the state changes after failed authentication
+// This method encapsulates the business rules for failed login attempts and account lockout
+func (u *User) ProcessFailedAuthentication(maxAttempts int, lockDuration time.Duration) error {
+	// Validate inputs
+	if maxAttempts <= 0 {
+		return errors.NewValidationError("max_attempts", "max attempts must be greater than 0")
+	}
+	if lockDuration <= 0 {
+		return errors.NewValidationError("lock_duration", "lock duration must be greater than 0")
+	}
+
+	u.IncrementLoginAttempts()
+
+	// Business rule: lock account after max attempts
+	if u.LoginAttempts >= maxAttempts {
+		lockUntil := time.Now().Add(lockDuration)
+		u.LockAccountTemporarily(lockUntil)
+	}
+
+	return nil
+}
+
+// ActivateAccount activates the user account
+// This method encapsulates the business rules for account activation
+func (u *User) ActivateAccount() error {
+	// Business rule: cannot activate deactivated users
+	if u.Status == UserStatusDeactivated {
+		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot activate deactivated user")
+	}
+
+	// Business rule: cannot activate suspended users
+	if u.Status == UserStatusSuspended {
+		return errors.NewAppError(errors.CodeUserSuspended, "Cannot activate suspended user")
+	}
+
+	// Already active - no error, but no change needed
+	if u.Status == UserStatusActive {
+		return nil
+	}
+
+	u.Status = UserStatusActive
+	u.updateMetadata()
+	return nil
+}
+
+// SuspendAccount suspends the user account
+// This method encapsulates the business rules for account suspension
+func (u *User) SuspendAccount(reason string) error {
+	// Business rule: cannot suspend deactivated users
+	if u.Status == UserStatusDeactivated {
+		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot suspend deactivated user")
+	}
+
+	// Already suspended - no error, but no change needed
+	if u.Status == UserStatusSuspended {
+		return nil
+	}
+
+	u.Status = UserStatusSuspended
+	u.updateMetadata()
+	return nil
+}
+
+// DeactivateAccount deactivates the user account
+// This method encapsulates the business rules for account deactivation
+func (u *User) DeactivateAccount(reason string) error {
+	// Already deactivated - no error, but no change needed
+	if u.Status == UserStatusDeactivated {
+		return nil
+	}
+
+	u.Status = UserStatusDeactivated
+	u.updateMetadata()
+	return nil
+}
+
+// LockAccountTemporarily locks the account until a specific time
+// This method encapsulates the business rules for temporary account lockout
+func (u *User) LockAccountTemporarily(until time.Time) error {
+	// Validate input - lock time must be in the future
+	if until.Before(time.Now()) {
+		return errors.NewValidationError("until", "lock time must be in the future")
+	}
+
+	// Business rule: cannot lock deactivated users
+	if u.Status == UserStatusDeactivated {
+		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
+	}
+
+	u.LockedUntil = &until
+	u.updateMetadata()
+	return nil
+}
+
+// LockAccountPermanently locks the account permanently by changing status
+// This method encapsulates the business rules for permanent account lockout
+func (u *User) LockAccountPermanently() error {
+	// Business rule: cannot lock deactivated users
+	if u.Status == UserStatusDeactivated {
+		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
+	}
+
+	// Already permanently locked - no error, but no change needed
+	if u.Status == UserStatusLocked {
+		return nil
+	}
+
+	u.Status = UserStatusLocked
+	u.updateMetadata()
+	return nil
+}
+
+// updateMetadata ensures consistent metadata updates for all state changes
+// This private helper centralizes version increment and timestamp updates
+func (u *User) updateMetadata() {
+	u.UpdatedAt = time.Now()
+	u.Version++
 }
 
 // GetDisplayName returns a formatted display name for the user

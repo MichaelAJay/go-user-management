@@ -62,18 +62,6 @@ type UserService interface {
 	DeleteUser(ctx context.Context, userID string) error
 }
 
-// userService implements the UserService interface.
-type userService struct {
-	repository     UserRepository
-	encrypter      encrypter.Encrypter
-	logger         logger.Logger
-	cache          cache.Cache
-	config         config.Config
-	metrics        metrics.Registry
-	emailValidator *validation.EmailValidator
-	authManager    auth.Manager
-}
-
 // ServiceConfig contains configuration for the UserService.
 type ServiceConfig struct {
 	// Cache settings
@@ -95,6 +83,19 @@ type ServiceConfig struct {
 	BlockedEmailDomains   []string `json:"blocked_email_domains"`
 }
 
+// userService implements the UserService interface.
+type userService struct {
+	repository     UserRepository
+	encrypter      encrypter.Encrypter
+	logger         logger.Logger
+	cache          cache.Cache
+	config         config.Config
+	metrics        metrics.Registry
+	emailValidator *validation.EmailValidator
+	authManager    auth.Manager
+	serviceConfig  *ServiceConfig // Store loaded configuration
+}
+
 // NewUserService creates a new UserService instance with the provided dependencies.
 func NewUserService(
 	repository UserRepository,
@@ -107,7 +108,8 @@ func NewUserService(
 ) UserService {
 	// Load service configuration
 	serviceConfig := &ServiceConfig{}
-	// Note: Using Get methods since config.Config doesn't have Unmarshal
+
+	// Cache settings
 	if ttl, ok := config.GetString("user_service.cache_user_ttl"); ok {
 		if parsed, err := time.ParseDuration(ttl); err == nil {
 			serviceConfig.CacheUserTTL = parsed
@@ -115,6 +117,60 @@ func NewUserService(
 	}
 	if serviceConfig.CacheUserTTL == 0 {
 		serviceConfig.CacheUserTTL = 15 * time.Minute
+	}
+
+	if ttl, ok := config.GetString("user_service.cache_stats_ttl"); ok {
+		if parsed, err := time.ParseDuration(ttl); err == nil {
+			serviceConfig.CacheStatseTTL = parsed
+		}
+	}
+	if serviceConfig.CacheStatseTTL == 0 {
+		serviceConfig.CacheStatseTTL = 5 * time.Minute
+	}
+
+	// Account lockout settings
+	if maxAttempts, ok := config.GetInt("user_service.max_login_attempts"); ok {
+		serviceConfig.MaxLoginAttempts = maxAttempts
+	}
+	if serviceConfig.MaxLoginAttempts == 0 {
+		serviceConfig.MaxLoginAttempts = 5
+	}
+
+	if lockoutStr, ok := config.GetString("user_service.lockout_duration"); ok {
+		if parsed, err := time.ParseDuration(lockoutStr); err == nil {
+			serviceConfig.LockoutDuration = parsed
+		}
+	}
+	if serviceConfig.LockoutDuration == 0 {
+		serviceConfig.LockoutDuration = 30 * time.Minute
+	}
+
+	// Rate limiting settings
+	if enabled, ok := config.GetBool("user_service.enable_rate_limit"); ok {
+		serviceConfig.EnableRateLimit = enabled
+	} else {
+		serviceConfig.EnableRateLimit = true
+	}
+
+	if windowStr, ok := config.GetString("user_service.rate_limit_window"); ok {
+		if parsed, err := time.ParseDuration(windowStr); err == nil {
+			serviceConfig.RateLimitWindow = parsed
+		}
+	}
+	if serviceConfig.RateLimitWindow == 0 {
+		serviceConfig.RateLimitWindow = time.Hour
+	}
+
+	if maxAttempts, ok := config.GetInt("user_service.rate_limit_max_attempts"); ok {
+		serviceConfig.RateLimitMaxAttempts = maxAttempts
+	}
+	if serviceConfig.RateLimitMaxAttempts == 0 {
+		serviceConfig.RateLimitMaxAttempts = 10
+	}
+
+	// Email validation settings
+	if allowDisposable, ok := config.GetBool("user_service.allow_disposable_emails"); ok {
+		serviceConfig.AllowDisposableEmails = allowDisposable
 	}
 
 	// Configure email validator
@@ -132,6 +188,7 @@ func NewUserService(
 		metrics:        metrics,
 		emailValidator: emailValidator,
 		authManager:    authManager,
+		serviceConfig:  serviceConfig,
 	}
 }
 
@@ -233,9 +290,10 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 
 	// Create user entity
 	user := NewUser(req.FirstName, req.LastName, normalizedEmail, string(hashedEmail), req.AuthenticationProvider, authData)
-	user.FirstName = encryptedFirstName
-	user.LastName = encryptedLastName
-	user.Email = encryptedEmail
+	if err := user.UpdateProfileData(encryptedFirstName, encryptedLastName, encryptedEmail, string(hashedEmail)); err != nil {
+		s.logger.Error("Failed to update user profile data", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
+	}
 
 	// Store user in repository
 	if err := s.repository.Create(ctx, user); err != nil {
@@ -364,43 +422,21 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	if err != nil || !valid {
-		// Increment login attempts
-		user.IncrementLoginAttempts()
+		// Clone the user to avoid race conditions when multiple goroutines update the same user
+		userCopy := user.Clone()
 
-		// Check if account should be locked
-		config := &ServiceConfig{}
-		// Load config values with defaults
-		if maxAttempts, ok := s.config.GetInt("user_service.max_login_attempts"); ok {
-			config.MaxLoginAttempts = maxAttempts
-		} else {
-			config.MaxLoginAttempts = 5
-		}
-		if lockoutStr, ok := s.config.GetString("user_service.lockout_duration"); ok {
-			if parsed, parseErr := time.ParseDuration(lockoutStr); parseErr == nil {
-				config.LockoutDuration = parsed
-			} else {
-				config.LockoutDuration = 30 * time.Minute
-			}
-		} else {
-			config.LockoutDuration = 30 * time.Minute
-		}
-
-		if user.LoginAttempts >= config.MaxLoginAttempts {
-			lockUntil := time.Now().Add(config.LockoutDuration)
-			user.LockAccount(&lockUntil)
-
-			s.logger.Warn("Account locked due to excessive failed login attempts",
-				logger.Field{Key: "user_id", Value: user.ID},
-				logger.Field{Key: "attempts", Value: user.LoginAttempts},
-				logger.Field{Key: "locked_until", Value: lockUntil})
+		// Process failed authentication using business logic with pre-loaded config
+		if err := userCopy.ProcessFailedAuthentication(s.serviceConfig.MaxLoginAttempts, s.serviceConfig.LockoutDuration); err != nil {
+			s.logger.Error("Failed to process failed authentication", logger.Field{Key: "error", Value: err.Error()})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Authentication processing failed")
 		}
 
 		// Update user in repository
-		s.repository.Update(ctx, user)
+		s.repository.Update(ctx, userCopy)
 
 		s.logger.Warn("Invalid password for user authentication",
-			logger.Field{Key: "user_id", Value: user.ID},
-			logger.Field{Key: "attempts", Value: user.LoginAttempts})
+			logger.Field{Key: "user_id", Value: userCopy.ID},
+			logger.Field{Key: "attempts", Value: userCopy.LoginAttempts})
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.authenticate_user.invalid_password",
 		})
@@ -409,11 +445,11 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		return nil, errors.NewInvalidCredentialsError()
 	}
 
-	// Reset login attempts on successful authentication
-	// Clone the user to avoid race conditions when multiple goroutines authenticate the same user
+	// Clone the user to avoid race conditions
 	userCopy := user.Clone()
-	userCopy.ResetLoginAttempts()
-	userCopy.UpdateLastLogin()
+
+	// Process successful authentication using business logic
+	userCopy.ProcessSuccessfulAuthentication()
 
 	// Update user in repository
 	if err := s.repository.Update(ctx, userCopy); err != nil {
@@ -536,33 +572,8 @@ func (s *userService) validateCreateUserRequest(req *CreateUserRequest) error {
 
 // checkRateLimit checks if the request should be rate limited.
 func (s *userService) checkRateLimit(ctx context.Context, identifier string) error {
-	config := &ServiceConfig{}
-	// Load config with defaults
-	if enabled, ok := s.config.GetBool("user_service.enable_rate_limit"); ok {
-		config.EnableRateLimit = enabled
-	} else {
-		config.EnableRateLimit = true
-	}
-
-	if !config.EnableRateLimit {
+	if !s.serviceConfig.EnableRateLimit {
 		return nil
-	}
-
-	// Load other rate limit config
-	if windowStr, ok := s.config.GetString("user_service.rate_limit_window"); ok {
-		if parsed, err := time.ParseDuration(windowStr); err == nil {
-			config.RateLimitWindow = parsed
-		} else {
-			config.RateLimitWindow = time.Hour
-		}
-	} else {
-		config.RateLimitWindow = time.Hour
-	}
-
-	if maxAttempts, ok := s.config.GetInt("user_service.rate_limit_max_attempts"); ok {
-		config.RateLimitMaxAttempts = maxAttempts
-	} else {
-		config.RateLimitMaxAttempts = 10
 	}
 
 	key := fmt.Sprintf("rate_limit:auth:%s", identifier)
@@ -579,7 +590,7 @@ func (s *userService) checkRateLimit(ctx context.Context, identifier string) err
 		}
 	}
 
-	if attemptCount >= config.RateLimitMaxAttempts {
+	if attemptCount >= s.serviceConfig.RateLimitMaxAttempts {
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.rate_limit_exceeded",
 		})
@@ -588,26 +599,14 @@ func (s *userService) checkRateLimit(ctx context.Context, identifier string) err
 	}
 
 	// Increment counter
-	s.cache.Set(ctx, key, attemptCount+1, config.RateLimitWindow)
+	s.cache.Set(ctx, key, attemptCount+1, s.serviceConfig.RateLimitWindow)
 	return nil
 }
 
 // cacheUser stores user data in cache.
 func (s *userService) cacheUser(ctx context.Context, user *User) {
-	config := &ServiceConfig{}
-	// Load cache TTL with default
-	if ttlStr, ok := s.config.GetString("user_service.cache_user_ttl"); ok {
-		if parsed, err := time.ParseDuration(ttlStr); err == nil {
-			config.CacheUserTTL = parsed
-		} else {
-			config.CacheUserTTL = 15 * time.Minute
-		}
-	} else {
-		config.CacheUserTTL = 15 * time.Minute
-	}
-
 	key := fmt.Sprintf("user:%s", user.ID)
-	if err := s.cache.Set(ctx, key, user, config.CacheUserTTL); err != nil {
+	if err := s.cache.Set(ctx, key, user, s.serviceConfig.CacheUserTTL); err != nil {
 		s.logger.Warn("Failed to cache user",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: user.ID})
@@ -630,20 +629,8 @@ func (s *userService) getCachedUser(ctx context.Context, userID string) *User {
 
 // cacheEmailMapping stores email->userID mapping in cache for faster email lookups.
 func (s *userService) cacheEmailMapping(ctx context.Context, hashedEmail, userID string) {
-	config := &ServiceConfig{}
-	// Use same TTL as user cache
-	if ttlStr, ok := s.config.GetString("user_service.cache_user_ttl"); ok {
-		if parsed, err := time.ParseDuration(ttlStr); err == nil {
-			config.CacheUserTTL = parsed
-		} else {
-			config.CacheUserTTL = 15 * time.Minute
-		}
-	} else {
-		config.CacheUserTTL = 15 * time.Minute
-	}
-
 	key := fmt.Sprintf("user:email:%s", hashedEmail)
-	if err := s.cache.Set(ctx, key, userID, config.CacheUserTTL); err != nil {
+	if err := s.cache.Set(ctx, key, userID, s.serviceConfig.CacheUserTTL); err != nil {
 		s.logger.Warn("Failed to cache email mapping",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "hashed_email", Value: hashedEmail})
@@ -759,17 +746,21 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	// Track if email is being changed for additional validation
 	emailChanged := false
 
+	// Prepare encrypted data for profile update
+	var encryptedFirstName, encryptedLastName, encryptedEmail []byte
+	var newHashedEmail string
+
 	// Update first name if provided
 	if req.FirstName != nil {
 		if err := validation.ValidateName(*req.FirstName, "first_name"); err != nil {
 			return nil, err
 		}
-		encryptedFirstName, err := s.encrypter.Encrypt([]byte(*req.FirstName))
+		var err error
+		encryptedFirstName, err = s.encrypter.Encrypt([]byte(*req.FirstName))
 		if err != nil {
 			s.logger.Error("Failed to encrypt first name", logger.Field{Key: "error", Value: err.Error()})
 			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
 		}
-		userCopy.FirstName = encryptedFirstName
 	}
 
 	// Update last name if provided
@@ -777,12 +768,12 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 		if err := validation.ValidateName(*req.LastName, "last_name"); err != nil {
 			return nil, err
 		}
-		encryptedLastName, err := s.encrypter.Encrypt([]byte(*req.LastName))
+		var err error
+		encryptedLastName, err = s.encrypter.Encrypt([]byte(*req.LastName))
 		if err != nil {
 			s.logger.Error("Failed to encrypt last name", logger.Field{Key: "error", Value: err.Error()})
 			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
 		}
-		userCopy.LastName = encryptedLastName
 	}
 
 	// Update email if provided
@@ -796,10 +787,11 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 		}
 
 		// Hash email for lookup
-		newHashedEmail := s.encrypter.HashLookupData([]byte(normalizedEmail))
+		newHashedEmailBytes := s.encrypter.HashLookupData([]byte(normalizedEmail))
+		newHashedEmail = string(newHashedEmailBytes)
 
 		// Check if new email already exists (but not for the same user)
-		if existingUser, err := s.repository.GetByHashedEmail(ctx, string(newHashedEmail)); err == nil {
+		if existingUser, err := s.repository.GetByHashedEmail(ctx, newHashedEmail); err == nil {
 			if existingUser.ID != userID {
 				counter := s.metrics.Counter(metrics.Options{
 					Name: "user_service.update_profile.duplicate_email",
@@ -813,23 +805,19 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 		}
 
 		// Encrypt new email
-		encryptedEmail, err := s.encrypter.Encrypt([]byte(normalizedEmail))
+		var err error
+		encryptedEmail, err = s.encrypter.Encrypt([]byte(normalizedEmail))
 		if err != nil {
 			s.logger.Error("Failed to encrypt email", logger.Field{Key: "error", Value: err.Error()})
 			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process email")
 		}
-
-		userCopy.Email = encryptedEmail
-		userCopy.HashedEmail = string(newHashedEmail)
-
-		// If email changed, user needs to verify new email
-		if userCopy.Status == UserStatusActive {
-			userCopy.Status = UserStatusPendingVerification
-		}
 	}
 
-	// Update timestamps
-	userCopy.UpdatedAt = time.Now()
+	// Update profile data using the new business logic method
+	if err := userCopy.UpdateProfileData(encryptedFirstName, encryptedLastName, encryptedEmail, newHashedEmail); err != nil {
+		s.logger.Error("Failed to update profile data", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to update profile")
+	}
 
 	// Save updated user
 	if err := s.repository.Update(ctx, userCopy); err != nil {
@@ -991,10 +979,11 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 	// Clone the user to avoid race conditions
 	userCopy := user.Clone()
 
-	// Update user authentication data and reset login attempts
-	userCopy.UpdateAuthenticationData(req.AuthenticationProvider, newAuthData)
-	userCopy.LoginAttempts = 0
-	userCopy.LockedUntil = nil
+	// Update user authentication data using the new business logic method
+	if err := userCopy.UpdateCredentialData(req.AuthenticationProvider, newAuthData); err != nil {
+		s.logger.Error("Failed to update credential data", logger.Field{Key: "error", Value: err.Error()})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to update credentials")
+	}
 
 	// Save updated user
 	if err := s.repository.Update(ctx, userCopy); err != nil {
@@ -1066,9 +1055,10 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 		return nil, errors.NewAppError(errors.CodeUserSuspended, "Cannot activate suspended user")
 	}
 
-	// Activate user
-	user.Status = UserStatusActive
-	user.UpdatedAt = time.Now()
+	// Activate user using business logic
+	if err := user.ActivateAccount(); err != nil {
+		return nil, err
+	}
 
 	// Save updated user
 	if err := s.repository.Update(ctx, user); err != nil {
@@ -1138,9 +1128,10 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 		return user.ToUserResponse(s.encrypter), nil
 	}
 
-	// Suspend user
-	user.Status = UserStatusSuspended
-	user.UpdatedAt = time.Now()
+	// Suspend user using business logic
+	if err := user.SuspendAccount(reason); err != nil {
+		return nil, err
+	}
 
 	// Save updated user
 	if err := s.repository.Update(ctx, user); err != nil {
@@ -1208,9 +1199,10 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 		return user.ToUserResponse(s.encrypter), nil
 	}
 
-	// Deactivate user
-	user.Status = UserStatusDeactivated
-	user.UpdatedAt = time.Now()
+	// Deactivate user using business logic
+	if err := user.DeactivateAccount(reason); err != nil {
+		return nil, err
+	}
 
 	// Save updated user
 	if err := s.repository.Update(ctx, user); err != nil {
@@ -1277,9 +1269,16 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
 	}
 
-	// Lock user account
-	user.LockAccount(until)
-	user.UpdatedAt = time.Now()
+	// Lock user account using business logic
+	if until != nil {
+		if err := user.LockAccountTemporarily(*until); err != nil {
+			return nil, err
+		}
+	} else {
+		if err := user.LockAccountPermanently(); err != nil {
+			return nil, err
+		}
+	}
 
 	// Save updated user
 	if err := s.repository.Update(ctx, user); err != nil {
@@ -1352,7 +1351,6 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 
 	// Unlock user account
 	user.UnlockAccount()
-	user.UpdatedAt = time.Now()
 
 	// Save updated user
 	if err := s.repository.Update(ctx, user); err != nil {
@@ -1475,18 +1473,7 @@ func (s *userService) GetUserStats(ctx context.Context) (*UserStatsResponse, err
 	}
 
 	// Cache the response
-	config := &ServiceConfig{}
-	if ttlStr, ok := s.config.GetString("user_service.cache_stats_ttl"); ok {
-		if parsed, parseErr := time.ParseDuration(ttlStr); parseErr == nil {
-			config.CacheStatseTTL = parsed
-		} else {
-			config.CacheStatseTTL = 5 * time.Minute
-		}
-	} else {
-		config.CacheStatseTTL = 5 * time.Minute
-	}
-
-	if err := s.cache.Set(ctx, cacheKey, response, config.CacheStatseTTL); err != nil {
+	if err := s.cache.Set(ctx, cacheKey, response, s.serviceConfig.CacheStatseTTL); err != nil {
 		s.logger.Warn("Failed to cache user stats", logger.Field{Key: "error", Value: err.Error()})
 	}
 

@@ -1,6 +1,7 @@
 package user
 
 import (
+	"strings"
 	"time"
 
 	"github.com/MichaelAJay/go-encrypter"
@@ -175,4 +176,27 @@ func (r *UpdateProfileRequest) IsEmpty() bool {
 // HasEmailChange checks if the UpdateProfileRequest includes an email change.
 func (r *UpdateProfileRequest) HasEmailChange() bool {
 	return r.Email != nil
+}
+
+// NormalizeEmail normalizes an email address by trimming whitespace and converting to lowercase
+func NormalizeEmail(email string) string {
+	if email == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+// GetChangedFields returns a list of field names that have been set in the UpdateProfileRequest
+func (r *UpdateProfileRequest) GetChangedFields() []string {
+	var fields []string
+	if r.FirstName != nil {
+		fields = append(fields, "first_name")
+	}
+	if r.LastName != nil {
+		fields = append(fields, "last_name")
+	}
+	if r.Email != nil {
+		fields = append(fields, "email")
+	}
+	return fields
 }
