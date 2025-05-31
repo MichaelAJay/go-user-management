@@ -15,7 +15,7 @@ type AuthenticationProvider interface {
 	// Authenticate verifies user credentials and returns authentication result.
 	// The credentials parameter is provider-specific (e.g., password, OAuth token, etc.).
 	// Returns AuthenticationResult with user information and session data on success.
-	Authenticate(ctx context.Context, identifier string, credentials any) (*AuthenticationResult, error)
+	Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData any) (*AuthenticationResult, error)
 
 	// ValidateCredentials checks if the provided credentials meet the provider's requirements.
 	// This is used during user registration or credential updates.
@@ -25,7 +25,7 @@ type AuthenticationProvider interface {
 	// UpdateCredentials updates the user's credentials for this provider.
 	// The oldCredentials parameter is used for verification before updating.
 	// Returns the new credential data to be stored with the user.
-	UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error)
+	UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error)
 
 	// PrepareCredentials prepares credentials for storage (e.g., hashing passwords).
 	// This method is called during user creation to transform raw credentials

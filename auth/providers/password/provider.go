@@ -85,7 +85,7 @@ func NewProvider(
 }
 
 // Authenticate verifies password credentials against stored password data.
-func (p *Provider) Authenticate(ctx context.Context, identifier string, credentials any) (*auth.AuthenticationResult, error) {
+func (p *Provider) Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData any) (*auth.AuthenticationResult, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -95,18 +95,29 @@ func (p *Provider) Authenticate(ctx context.Context, identifier string, credenti
 	}()
 
 	// Type assert credentials
-	_, ok := credentials.(*PasswordCredentials)
+	validCredentials, ok := credentials.(*PasswordCredentials)
 	if !ok {
 		return nil, errors.NewValidationError("credentials", "invalid credential type for password provider")
 	}
 
-	// The actual password verification will be handled by the user service
-	// This provider focuses on credential validation and preparation
-	p.logger.Debug("Password authentication requested", logger.Field{Key: "identifier", Value: identifier})
+	// Verify password against stored data
+	valid, err := p.verifyPassword(ctx, storedAuthData, validCredentials.Password)
+	if err != nil || !valid {
+		counter := p.metrics.Counter(metrics.Options{
+			Name: "password_provider.authenticate.failed",
+		})
+		counter.Inc()
+		return nil, errors.NewInvalidCredentialsError()
+	}
 
-	// Return basic authentication result
-	// The user service will handle the actual verification against stored data
+	counter := p.metrics.Counter(metrics.Options{
+		Name: "password_provider.authenticate.success",
+	})
+	counter.Inc()
+
+	// Return authentication result with proper user ID
 	return &auth.AuthenticationResult{
+		UserID:         identifier, // This should be the user ID, not email
 		ProviderType:   auth.ProviderTypePassword,
 		ProviderUserID: identifier,
 		SessionData: map[string]any{
@@ -157,7 +168,7 @@ func (p *Provider) ValidateCredentials(ctx context.Context, credentials any, use
 }
 
 // UpdateCredentials updates password credentials after verification.
-func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any) (any, error) {
+func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -175,6 +186,12 @@ func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCred
 	newPasswordCreds, ok := newCredentials.(*PasswordCredentials)
 	if !ok {
 		return nil, errors.NewValidationError("new_credentials", "invalid credential type for password provider")
+	}
+
+	// Verify the old password
+	valid, err := p.verifyPassword(ctx, storedAuthData, oldPasswordCreds.Password)
+	if err != nil || !valid {
+		return nil, errors.NewInvalidCredentialsError()
 	}
 
 	// Check if new password is different from old password
@@ -235,20 +252,15 @@ func (p *Provider) PrepareCredentials(ctx context.Context, credentials any) (any
 	return storedData, nil
 }
 
-// VerifyPassword verifies a password against stored password data.
-// This is a utility method used by the user service during authentication.
-func (p *Provider) VerifyPassword(ctx context.Context, storedData any, password string) (bool, error) {
-	startTime := time.Now()
-	defer func() {
-		timer := p.metrics.Timer(metrics.Options{
-			Name: "password_provider.verify_password",
-		})
-		timer.RecordSince(startTime)
-	}()
-
+// verifyPassword verifies a password against stored password data.// This is a utility method used by the user service during authentication.
+func (p *Provider) verifyPassword(ctx context.Context, storedData any, password string) (bool, error) {
 	// Type assert stored data
 	passwordData, ok := storedData.(*StoredPasswordData)
 	if !ok {
+		p.logger.Error("Invalid stored data type for password provider",
+			logger.Field{Key: "expected_type", Value: "*StoredPasswordData"},
+			logger.Field{Key: "actual_type", Value: fmt.Sprintf("%T", storedData)},
+		)
 		return false, errors.NewValidationError("stored_data", "invalid stored data type for password provider")
 	}
 

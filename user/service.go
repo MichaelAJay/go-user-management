@@ -400,28 +400,16 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	// Convert credentials to proper type for the provider
 	convertedCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.Credentials)
 	if err != nil {
-		s.logger.Error("Failed to convert credentials", logger.Field{Key: "error", Value: err.Error()})
-		return nil, errors.NewInvalidCredentialsError()
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.authenticate_user.credential_conversion_error",
+		})
+		counter.Inc()
+		return nil, err
 	}
 
-	// For password provider, we need to verify the password directly
-	var valid bool
-	if req.AuthenticationProvider == auth.ProviderTypePassword {
-		// Type assert to password provider and verify
-		if passwordProvider, ok := provider.(*password.Provider); ok {
-			passwordCreds := convertedCredentials.(*password.PasswordCredentials)
-			valid, err = passwordProvider.VerifyPassword(ctx, storedAuthData, passwordCreds.Password)
-		} else {
-			s.logger.Error("Invalid password provider type")
-			return nil, errors.NewInvalidCredentialsError()
-		}
-	} else {
-		// For other providers, use the standard authenticate method
-		_, err = provider.Authenticate(ctx, normalizedEmail, convertedCredentials)
-		valid = err == nil
-	}
-
-	if err != nil || !valid {
+	// Use the provider to authenticate with stored data
+	authResult, err := provider.Authenticate(ctx, user.ID, convertedCredentials, storedAuthData)
+	if err != nil {
 		// Clone the user to avoid race conditions when multiple goroutines update the same user
 		userCopy := user.Clone()
 
@@ -439,11 +427,11 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 			// Continue with authentication failure response despite repository error
 		}
 
-		s.logger.Warn("Invalid password for user authentication",
+		s.logger.Warn("Authentication failed for user",
 			logger.Field{Key: "user_id", Value: userCopy.ID},
 			logger.Field{Key: "attempts", Value: userCopy.LoginAttempts})
 		counter := s.metrics.Counter(metrics.Options{
-			Name: "user_service.authenticate_user.invalid_password",
+			Name: "user_service.authenticate_user.failed",
 		})
 		counter.Inc()
 
@@ -472,17 +460,6 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		Name: "user_service.authenticate_user.success",
 	})
 	counter.Inc()
-
-	// Create authentication result
-	authResult := &auth.AuthenticationResult{
-		UserID:         userCopy.ID,
-		ProviderType:   req.AuthenticationProvider,
-		ProviderUserID: normalizedEmail,
-		SessionData: map[string]any{
-			"auth_method": string(req.AuthenticationProvider),
-			"auth_time":   time.Now(),
-		},
-	}
 
 	return &AuthenticationResponse{
 		User:       userCopy.ToUserResponse(s.encrypter),
