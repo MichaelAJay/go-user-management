@@ -85,7 +85,12 @@ type ServiceConfig struct {
 
 // userService implements the UserService interface.
 type userService struct {
-	repository     UserRepository
+	// Repository dependencies - each focused on specific domain
+	userRepository     UserRepository
+	authRepository     AuthenticationRepository // NEW - handles credentials
+	securityRepository UserSecurityRepository   // NEW - handles security state
+
+	// Existing dependencies
 	encrypter      encrypter.Encrypter
 	logger         logger.Logger
 	cache          cache.Cache
@@ -98,7 +103,9 @@ type userService struct {
 
 // NewUserService creates a new UserService instance with the provided dependencies.
 func NewUserService(
-	repository UserRepository,
+	userRepository UserRepository,
+	authRepository AuthenticationRepository, // NEW parameter
+	securityRepository UserSecurityRepository, // NEW parameter
 	encrypter encrypter.Encrypter,
 	logger logger.Logger,
 	cache cache.Cache,
@@ -180,15 +187,17 @@ func NewUserService(
 	emailValidator.BlockedDomains = serviceConfig.BlockedEmailDomains
 
 	return &userService{
-		repository:     repository,
-		encrypter:      encrypter,
-		logger:         logger,
-		cache:          cache,
-		config:         config,
-		metrics:        metrics,
-		emailValidator: emailValidator,
-		authManager:    authManager,
-		serviceConfig:  serviceConfig,
+		userRepository:     userRepository,
+		authRepository:     authRepository,     // NEW
+		securityRepository: securityRepository, // NEW
+		encrypter:          encrypter,
+		logger:             logger,
+		cache:              cache,
+		config:             config,
+		metrics:            metrics,
+		emailValidator:     emailValidator,
+		authManager:        authManager,
+		serviceConfig:      serviceConfig,
 	}
 }
 
@@ -251,7 +260,7 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	hashedEmail := s.encrypter.HashLookupData([]byte(normalizedEmail))
 
 	// Check if user already exists
-	if _, err := s.repository.GetByHashedEmail(ctx, string(hashedEmail)); err == nil {
+	if _, err := s.userRepository.GetByHashedEmail(ctx, string(hashedEmail)); err == nil {
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.create_user.duplicate_email",
 		})
@@ -289,14 +298,14 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	}
 
 	// Create user entity
-	user := NewUser(req.FirstName, req.LastName, normalizedEmail, string(hashedEmail), req.AuthenticationProvider, authData)
+	user := NewUser(req.FirstName, req.LastName, normalizedEmail, string(hashedEmail), req.AuthenticationProvider)
 	if err := user.UpdateProfileData(encryptedFirstName, encryptedLastName, encryptedEmail, string(hashedEmail)); err != nil {
 		s.logger.Error("Failed to update user profile data", logger.Field{Key: "error", Value: err.Error()})
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
 	}
 
 	// Store user in repository
-	if err := s.repository.Create(ctx, user); err != nil {
+	if err := s.userRepository.Create(ctx, user); err != nil {
 		s.logger.Error("Failed to create user in repository",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: user.ID})
@@ -305,6 +314,33 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		})
 		counter.Inc()
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to create user")
+	}
+
+	// Create credentials using the new credential architecture
+	// Encrypt the prepared auth data
+	encryptedAuthData, err := s.encrypter.Encrypt([]byte(fmt.Sprintf("%v", authData))) // TODO: Proper serialization
+	if err != nil {
+		s.logger.Error("Failed to encrypt auth data", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to encrypt auth data")
+	}
+
+	credentials := NewUserCredentials(user.ID, req.AuthenticationProvider, encryptedAuthData)
+	if err := s.authRepository.CreateCredentials(ctx, credentials); err != nil {
+		s.logger.Error("Failed to create user credentials",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+		// TODO: Rollback user creation
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to create credentials")
+	}
+
+	// Create security state
+	security := NewUserSecurity(user.ID)
+	if err := s.securityRepository.CreateSecurity(ctx, security); err != nil {
+		s.logger.Error("Failed to create user security state",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+		// TODO: Rollback user and credentials creation
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to create security state")
 	}
 
 	// Cache user data
@@ -346,7 +382,7 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	// Get user by hashed email
-	user, err := s.repository.GetByHashedEmail(ctx, string(hashedEmail))
+	user, err := s.userRepository.GetByHashedEmail(ctx, string(hashedEmail))
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			counter := s.metrics.Counter(metrics.Options{
@@ -361,19 +397,28 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 
 	// Check if user can authenticate
 	if !user.CanAuthenticate() {
+		// Get security state to check for locks
+		security, err := s.securityRepository.GetSecurity(ctx, user.ID)
+		if err != nil {
+			s.logger.Error("Failed to get user security state",
+				logger.Field{Key: "error", Value: err.Error()},
+				logger.Field{Key: "user_id", Value: user.ID})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Authentication failed")
+		}
+
 		s.logger.Warn("Authentication attempt for non-authenticatable user",
 			logger.Field{Key: "user_id", Value: user.ID},
 			logger.Field{Key: "status", Value: user.Status.String()},
-			logger.Field{Key: "is_locked", Value: user.IsLocked()})
+			logger.Field{Key: "is_locked", Value: security.IsLocked()})
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.authenticate_user.account_locked",
 		})
 		counter.Inc()
 
-		if user.IsLocked() {
+		if security.IsLocked() {
 			var lockMessage string
-			if user.LockedUntil != nil {
-				lockMessage = user.LockedUntil.Format(time.RFC3339)
+			if security.LockedUntil != nil {
+				lockMessage = security.LockedUntil.Format(time.RFC3339)
 			}
 			return nil, errors.NewAccountLockedError(lockMessage)
 		}
@@ -389,12 +434,16 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	// Get stored authentication data for this provider
-	storedAuthData, exists := user.GetAuthenticationData(req.AuthenticationProvider)
-	if !exists {
-		s.logger.Warn("User does not have authentication data for provider",
-			logger.Field{Key: "user_id", Value: user.ID},
-			logger.Field{Key: "provider", Value: string(req.AuthenticationProvider)})
-		return nil, errors.NewInvalidCredentialsError()
+	credentials, err := s.authRepository.GetCredentials(ctx, user.ID, req.AuthenticationProvider)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			s.logger.Warn("User does not have authentication data for provider",
+				logger.Field{Key: "user_id", Value: user.ID},
+				logger.Field{Key: "provider", Value: string(req.AuthenticationProvider)})
+			return nil, errors.NewInvalidCredentialsError()
+		}
+		s.logger.Error("Failed to get user credentials", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Authentication failed")
 	}
 
 	// Convert credentials to proper type for the provider
@@ -408,28 +457,30 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	// Use the provider to authenticate with stored data
-	authResult, err := provider.Authenticate(ctx, user.ID, convertedCredentials, storedAuthData)
+	authResult, err := provider.Authenticate(ctx, user.ID, convertedCredentials, credentials.EncryptedAuthData)
 	if err != nil {
-		// Clone the user to avoid race conditions when multiple goroutines update the same user
-		userCopy := user.Clone()
-
-		// Process failed authentication using business logic with pre-loaded config
-		if err := userCopy.ProcessFailedAuthentication(s.serviceConfig.MaxLoginAttempts, s.serviceConfig.LockoutDuration); err != nil {
-			s.logger.Error("Failed to process failed authentication", logger.Field{Key: "error", Value: err.Error()})
+		// Get security state to process failed authentication
+		security, secErr := s.securityRepository.GetSecurity(ctx, user.ID)
+		if secErr != nil {
+			s.logger.Error("Failed to get security state for failed auth processing",
+				logger.Field{Key: "error", Value: secErr.Error()})
 			return nil, errors.NewAppError(errors.CodeInternalError, "Authentication processing failed")
 		}
 
-		// Update user in repository
-		if err := s.repository.Update(ctx, userCopy); err != nil {
-			s.logger.Error("Failed to update user after failed authentication",
+		// Process failed authentication using business logic with pre-loaded config
+		security.ProcessFailedAttempt(s.serviceConfig.MaxLoginAttempts, s.serviceConfig.LockoutDuration, "")
+
+		// Update security state in repository
+		if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+			s.logger.Error("Failed to update security state after failed authentication",
 				logger.Field{Key: "error", Value: err.Error()},
-				logger.Field{Key: "user_id", Value: userCopy.ID})
+				logger.Field{Key: "user_id", Value: user.ID})
 			// Continue with authentication failure response despite repository error
 		}
 
 		s.logger.Warn("Authentication failed for user",
-			logger.Field{Key: "user_id", Value: userCopy.ID},
-			logger.Field{Key: "attempts", Value: userCopy.LoginAttempts})
+			logger.Field{Key: "user_id", Value: user.ID},
+			logger.Field{Key: "attempts", Value: security.LoginAttempts})
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.authenticate_user.failed",
 		})
@@ -438,31 +489,37 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		return nil, errors.NewInvalidCredentialsError()
 	}
 
-	// Clone the user to avoid race conditions
-	userCopy := user.Clone()
+	// Get security state to process successful authentication
+	security, err := s.securityRepository.GetSecurity(ctx, user.ID)
+	if err != nil {
+		s.logger.Error("Failed to get security state for successful auth processing",
+			logger.Field{Key: "error", Value: err.Error()})
+		// Continue despite error as authentication was successful
+		security = NewUserSecurity(user.ID) // Create default if missing
+	}
 
 	// Process successful authentication using business logic
-	userCopy.ProcessSuccessfulAuthentication()
+	security.ProcessSuccessfulLogin("")
 
-	// Update user in repository
-	if err := s.repository.Update(ctx, userCopy); err != nil {
-		s.logger.Error("Failed to update user after successful authentication",
+	// Update security state in repository
+	if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+		s.logger.Error("Failed to update security state after successful authentication",
 			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: userCopy.ID})
+			logger.Field{Key: "user_id", Value: user.ID})
 		// Continue despite error as authentication was successful
 	}
 
-	// Update cache with the modified copy
-	s.cacheUser(ctx, userCopy)
+	// Update cache with user data
+	s.cacheUser(ctx, user)
 
-	s.logger.Info("User authenticated successfully", logger.Field{Key: "user_id", Value: userCopy.ID})
+	s.logger.Info("User authenticated successfully", logger.Field{Key: "user_id", Value: user.ID})
 	counter := s.metrics.Counter(metrics.Options{
 		Name: "user_service.authenticate_user.success",
 	})
 	counter.Inc()
 
 	return &AuthenticationResponse{
-		User:       userCopy.ToUserResponse(s.encrypter),
+		User:       user.ToUserResponse(s.encrypter),
 		AuthResult: authResult,
 		Message:    "Authentication successful",
 	}, nil
@@ -493,7 +550,7 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*UserResp
 	}
 
 	// Get from repository
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			counter := s.metrics.Counter(metrics.Options{
@@ -656,7 +713,7 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 	}
 
 	// Get from repository
-	user, err := s.repository.GetByHashedEmail(ctx, string(hashedEmail))
+	user, err := s.userRepository.GetByHashedEmail(ctx, string(hashedEmail))
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			counter := s.metrics.Counter(metrics.Options{
@@ -706,7 +763,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return nil, errors.NewUserNotFoundError(userID)
@@ -773,7 +830,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 		newHashedEmail = string(newHashedEmailBytes)
 
 		// Check if new email already exists (but not for the same user)
-		if existingUser, err := s.repository.GetByHashedEmail(ctx, newHashedEmail); err == nil {
+		if existingUser, err := s.userRepository.GetByHashedEmail(ctx, newHashedEmail); err == nil {
 			if existingUser.ID != userID {
 				counter := s.metrics.Counter(metrics.Options{
 					Name: "user_service.update_profile.duplicate_email",
@@ -802,7 +859,7 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
+	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
@@ -873,7 +930,7 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return errors.NewUserNotFoundError(userID)
@@ -890,15 +947,6 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 	}
 
 	// Convert credentials to proper types for the provider
-	convertedCurrentCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.CurrentCredentials)
-	if err != nil {
-		counter := s.metrics.Counter(metrics.Options{
-			Name: "user_service.update_credentials.credential_conversion_error",
-		})
-		counter.Inc()
-		return err
-	}
-
 	convertedNewCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.NewCredentials)
 	if err != nil {
 		counter := s.metrics.Counter(metrics.Options{
@@ -944,35 +992,26 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		return err
 	}
 
-	// Use authentication manager to update credentials
-	credentialUpdateReq := &auth.CredentialUpdateRequest{
-		UserID:         userID,
-		OldCredentials: convertedCurrentCredentials,
-		NewCredentials: convertedNewCredentials,
-		ProviderType:   req.AuthenticationProvider,
-	}
-
-	newAuthData, err := s.authManager.UpdateCredentials(ctx, credentialUpdateReq)
-	if err != nil {
-		s.logger.Error("Failed to update credentials", logger.Field{Key: "error", Value: err.Error()})
-		return err
-	}
-
 	// Clone the user to avoid race conditions
 	userCopy := user.Clone()
 
-	// Update user authentication data using the new business logic method
-	if err := userCopy.UpdateCredentialData(req.AuthenticationProvider, newAuthData); err != nil {
+	// Update user authentication data using the new credential architecture
+	// Get current credentials
+	currentCredentials, err := s.authRepository.GetCredentials(ctx, userID, req.AuthenticationProvider)
+	if err != nil {
+		s.logger.Error("Failed to get current credentials", logger.Field{Key: "error", Value: err.Error()})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to get current credentials")
+	}
+
+	// Update credentials using the new architecture
+	if err := currentCredentials.UpdateAuthData(nil); err != nil { // TODO: encrypt newAuthData properly
 		s.logger.Error("Failed to update credential data", logger.Field{Key: "error", Value: err.Error()})
 		return errors.NewAppError(errors.CodeInternalError, "Failed to update credentials")
 	}
 
-	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
-		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
-		}
-		s.logger.Error("Failed to update user credentials",
+	// Save updated credentials
+	if err := s.authRepository.UpdateCredentials(ctx, currentCredentials); err != nil {
+		s.logger.Error("Failed to save updated credentials",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
 		counter := s.metrics.Counter(metrics.Options{
@@ -1012,7 +1051,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return nil, errors.NewUserNotFoundError(userID)
@@ -1046,7 +1085,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
+	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
@@ -1092,7 +1131,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return nil, errors.NewUserNotFoundError(userID)
@@ -1122,7 +1161,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
+	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
@@ -1170,7 +1209,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return nil, errors.NewUserNotFoundError(userID)
@@ -1196,7 +1235,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	}
 
 	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
+	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
@@ -1244,7 +1283,7 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return nil, errors.NewUserNotFoundError(userID)
@@ -1263,19 +1302,33 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	// Clone user to avoid race conditions
 	userCopy := user.Clone()
 
-	// Lock user account using business logic
-	if until != nil {
-		if err := userCopy.LockAccountTemporarily(*until); err != nil {
-			return nil, err
-		}
-	} else {
-		if err := userCopy.LockAccountPermanently(); err != nil {
-			return nil, err
+	// Get or create security state
+	security, err := s.securityRepository.GetSecurity(ctx, userID)
+	if err != nil {
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			// Create security state if it doesn't exist
+			security = NewUserSecurity(userID)
+		} else {
+			s.logger.Error("Failed to get security state for locking",
+				logger.Field{Key: "error", Value: err.Error()},
+				logger.Field{Key: "user_id", Value: userID})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to get security state")
 		}
 	}
 
-	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
+	// Lock user account using security business logic
+	if until != nil {
+		security.LockAccount(until, reason)
+	} else {
+		// For permanent locks, also update User status
+		if err := userCopy.LockAccountPermanently(); err != nil {
+			return nil, err
+		}
+		security.LockAccount(nil, reason) // Permanent lock in security as well
+	}
+
+	// Save both user and security state
+	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
@@ -1287,6 +1340,14 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		})
 		counter.Inc()
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to lock user")
+	}
+
+	// Save security state
+	if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+		s.logger.Error("Failed to update security state for lock",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		// Continue as user status was updated
 	}
 
 	// Update cache
@@ -1321,7 +1382,7 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	}
 
 	// Get current user
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return nil, errors.NewUserNotFoundError(userID)
@@ -1332,13 +1393,22 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user")
 	}
 
-	// Check if user can be unlocked
-	if user.Status == UserStatusDeactivated {
-		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot unlock deactivated user")
+	// Get security state to check if user is actually locked
+	security, err := s.securityRepository.GetSecurity(ctx, userID)
+	if err != nil {
+		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
+			s.logger.Error("Failed to get security state for unlocking",
+				logger.Field{Key: "error", Value: err.Error()},
+				logger.Field{Key: "user_id", Value: userID})
+			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to get security state")
+		}
+		// No security record means not locked
+		s.logger.Info("User has no security record, treating as not locked", logger.Field{Key: "user_id", Value: userID})
+		return user.ToUserResponse(s.encrypter), nil
 	}
 
 	// Check if user is actually locked
-	if !user.IsLocked() {
+	if !security.IsLocked() && user.Status != UserStatusLocked {
 		s.logger.Info("User is not locked", logger.Field{Key: "user_id", Value: userID})
 		return user.ToUserResponse(s.encrypter), nil
 	}
@@ -1346,11 +1416,12 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	// Clone user to avoid race conditions
 	userCopy := user.Clone()
 
-	// Unlock user account
+	// Unlock user account in both User and Security entities
 	userCopy.UnlockAccount()
+	security.UnlockAccount()
 
-	// Save updated user
-	if err := s.repository.Update(ctx, userCopy); err != nil {
+	// Save both user and security state
+	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
 		}
@@ -1362,6 +1433,14 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 		})
 		counter.Inc()
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to unlock user")
+	}
+
+	// Save security state
+	if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+		s.logger.Error("Failed to update security state for unlock",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		// Continue as user status was updated
 	}
 
 	// Update cache
@@ -1403,7 +1482,7 @@ func (s *userService) ListUsers(ctx context.Context, req *ListUsersRequest) (*Li
 	}
 
 	// Get users from repository
-	users, totalCount, err := s.repository.ListUsers(ctx, req.Offset, req.Limit)
+	users, totalCount, err := s.userRepository.ListUsers(ctx, req.Offset, req.Limit)
 	if err != nil {
 		s.logger.Error("Failed to list users",
 			logger.Field{Key: "error", Value: err.Error()},
@@ -1458,7 +1537,7 @@ func (s *userService) GetUserStats(ctx context.Context) (*UserStatsResponse, err
 	}
 
 	// Get stats from repository
-	stats, err := s.repository.GetUserStats(ctx)
+	stats, err := s.userRepository.GetUserStats(ctx)
 	if err != nil {
 		s.logger.Error("Failed to get user stats", logger.Field{Key: "error", Value: err.Error()})
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve user statistics")
@@ -1500,7 +1579,7 @@ func (s *userService) DeleteUser(ctx context.Context, userID string) error {
 	}
 
 	// Check if user exists first
-	user, err := s.repository.GetByID(ctx, userID)
+	user, err := s.userRepository.GetByID(ctx, userID)
 	if err != nil {
 		if errors.IsErrorType(err, errors.ErrUserNotFound) {
 			return errors.NewUserNotFoundError(userID)
@@ -1512,7 +1591,7 @@ func (s *userService) DeleteUser(ctx context.Context, userID string) error {
 	}
 
 	// Delete user from repository
-	if err := s.repository.Delete(ctx, userID); err != nil {
+	if err := s.userRepository.Delete(ctx, userID); err != nil {
 		s.logger.Error("Failed to delete user",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})

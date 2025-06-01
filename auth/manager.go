@@ -69,7 +69,9 @@ func (m *manager) Authenticate(ctx context.Context, req *AuthenticationRequest) 
 		return nil, errors.NewValidationError("provider_type", err.Error())
 	}
 
-	result, err := provider.Authenticate(ctx, req.Identifier, req.Credentials)
+	// Note: This method is used when we don't have stored auth data (for external auth flows)
+	// For user authentication with stored data, use the provider directly
+	result, err := provider.Authenticate(ctx, req.Identifier, req.Credentials, nil)
 	if err != nil {
 		counter := m.metrics.Counter(metrics.Options{
 			Name: "auth_manager.authenticate.failed",
@@ -117,7 +119,9 @@ func (m *manager) UpdateCredentials(ctx context.Context, req *CredentialUpdateRe
 			fmt.Sprintf("provider %s does not support credential updates", req.ProviderType))
 	}
 
-	return provider.UpdateCredentials(ctx, req.UserID, req.OldCredentials, req.NewCredentials)
+	// Note: For credential updates, we need to pass the stored auth data
+	// This should be provided in the request or retrieved from storage
+	return provider.UpdateCredentials(ctx, req.UserID, req.OldCredentials, req.NewCredentials, nil) // TODO: Add StoredAuthData to request
 }
 
 // PrepareCredentials prepares credentials for storage using the specified provider.

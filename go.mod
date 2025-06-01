@@ -15,7 +15,7 @@ require (
 
 require (
 	github.com/MichaelAJay/go-config v0.1.0
-	github.com/MichaelAJay/go-encrypter v0.1.2
+	github.com/MichaelAJay/go-encrypter v0.2.0
 	github.com/MichaelAJay/go-logger v0.1.0
 	github.com/MichaelAJay/go-metrics v0.1.0
 	github.com/MichaelAJay/go-serializer v0.2.0 // indirect

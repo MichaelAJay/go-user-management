@@ -2,8 +2,8 @@ github.com/MichaelAJay/go-cache v0.1.0 h1:fQEMr2PB3dEyi7xYCQNaXoY4lWYCB0uFj+zK6B
 github.com/MichaelAJay/go-cache v0.1.0/go.mod h1:02i5Y8opaspliFt2YigoEA/YzdbPw75JPf1ZfmLEpSU=
 github.com/MichaelAJay/go-config v0.1.0 h1:XnW8JI96dJqWy2RecnJoCxCSjnurk4bBRzBhzBsUB8Y=
 github.com/MichaelAJay/go-config v0.1.0/go.mod h1:JoswAGO3YjOzzp34GX4FnNQxGKr+lOoXEQD3CGWYCok=
-github.com/MichaelAJay/go-encrypter v0.1.2 h1:76986J8MIzOD+gatTCp0j3h8EpmWx03QUxBdAHScC9g=
-github.com/MichaelAJay/go-encrypter v0.1.2/go.mod h1:NM+vWM3GqfLeHQ18hfoYCFt3xJvBRVIoLAVxdgBnaUA=
+github.com/MichaelAJay/go-encrypter v0.2.0 h1:0M82pZddmQUXM7cHt5zIVdjD/4RJo478FHWEx31KLj4=
+github.com/MichaelAJay/go-encrypter v0.2.0/go.mod h1:KHNgje++p3epE1hR9ncnazgqrzR3kmDOFF2PaeKcchk=
 github.com/MichaelAJay/go-logger v0.1.0 h1:Rcl5HnHvpn1c2kUe8Ej3IOCNC7STUa+hF4d2VJebfms=
 github.com/MichaelAJay/go-logger v0.1.0/go.mod h1:h1ciS8zrwtBKWL6M4efIrC4Z4E20Bx4yOscZtVw7nEI=
 github.com/MichaelAJay/go-metrics v0.1.0 h1:+Iu+CPiZho8KSWxw+5HF1+0L292ZMN1oKbi6IQd+Pc0=

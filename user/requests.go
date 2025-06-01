@@ -127,25 +127,19 @@ type UserStatsResponse struct {
 // toUserResponse converts a User entity to a UserResponse DTO.
 // This method excludes sensitive information and provides computed fields.
 func (u *User) ToUserResponse(enc encrypter.Encrypter) *UserResponse {
-	// Get available authentication providers
-	availableProviders := make([]auth.ProviderType, 0, len(u.AuthenticationData))
-	for providerType := range u.AuthenticationData {
-		availableProviders = append(availableProviders, providerType)
-	}
-
 	return &UserResponse{
 		ID:                     u.ID,
 		Status:                 u.Status,
 		CreatedAt:              u.CreatedAt,
 		UpdatedAt:              u.UpdatedAt,
-		LastLoginAt:            u.LastLoginAt,
+		LastLoginAt:            nil, // Will be populated by service layer with UserSecurity data
 		Version:                u.Version,
-		DisplayName:            u.GetDisplayName(enc),
+		DisplayName:            "", // Will be populated by service layer with logger
 		EmailVerified:          u.Status != UserStatusPendingVerification,
-		AccountLocked:          u.IsLocked(),
+		AccountLocked:          false, // Will be populated by service layer with UserSecurity data
 		CanAuthenticate:        u.CanAuthenticate(),
 		PrimaryAuthProvider:    u.PrimaryAuthProvider,
-		AvailableAuthProviders: availableProviders,
+		AvailableAuthProviders: []auth.ProviderType{u.PrimaryAuthProvider}, // Basic default, service layer will populate with actual providers
 	}
 }
 
@@ -154,8 +148,8 @@ func (u *User) ToUserResponse(enc encrypter.Encrypter) *UserResponse {
 func (u *User) ToDetailedUserResponse(enc encrypter.Encrypter) *DetailedUserResponse {
 	response := &DetailedUserResponse{
 		UserResponse:  *u.ToUserResponse(enc),
-		LoginAttempts: u.LoginAttempts,
-		LockedUntil:   u.LockedUntil,
+		LoginAttempts: 0,   // Will be populated by service layer with UserSecurity data
+		LockedUntil:   nil, // Will be populated by service layer with UserSecurity data
 	}
 
 	// Add a preview of the hashed email for debugging (first 8 characters)
