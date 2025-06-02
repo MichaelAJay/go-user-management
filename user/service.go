@@ -357,7 +357,8 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	// Use orchestrator method to build comprehensive response
+	return s.buildUserResponse(ctx, user)
 }
 
 // AuthenticateUser authenticates a user with email and password.
@@ -518,8 +519,18 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	})
 	counter.Inc()
 
+	// Build comprehensive user response using orchestrator
+	userResponse, err := s.buildUserResponse(ctx, user)
+	if err != nil {
+		s.logger.Error("Failed to build user response after authentication",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+		// Continue with basic response rather than failing authentication
+		userResponse = user.ToUserResponse(s.encrypter)
+	}
+
 	return &AuthenticationResponse{
-		User:       user.ToUserResponse(s.encrypter),
+		User:       userResponse,
 		AuthResult: authResult,
 		Message:    "Authentication successful",
 	}, nil
@@ -546,7 +557,8 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*UserResp
 			Name: "user_service.get_user_by_id.cache_hit",
 		})
 		counter.Inc()
-		return user.ToUserResponse(s.encrypter), nil
+		// Use orchestrator method to build comprehensive response
+		return s.buildUserResponse(ctx, user)
 	}
 
 	// Get from repository
@@ -572,7 +584,8 @@ func (s *userService) GetUserByID(ctx context.Context, userID string) (*UserResp
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil
+	// Use orchestrator method to build comprehensive response
+	return s.buildUserResponse(ctx, user)
 }
 
 // validateCreateUserRequest validates the create user request.
@@ -707,7 +720,8 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 					Name: "user_service.get_user_by_email.cache_hit",
 				})
 				counter.Inc()
-				return user.ToUserResponse(s.encrypter), nil // Read-only: use original safely
+				// Use orchestrator method to build comprehensive response
+				return s.buildUserResponse(ctx, user)
 			}
 		}
 	}
@@ -737,7 +751,8 @@ func (s *userService) GetUserByEmail(ctx context.Context, email string) (*UserRe
 	})
 	counter.Inc()
 
-	return user.ToUserResponse(s.encrypter), nil // Read-only: use original safely
+	// Use orchestrator method to build comprehensive response
+	return s.buildUserResponse(ctx, user)
 }
 
 // UpdateProfile updates user profile information.
@@ -898,7 +913,8 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Upd
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(s.encrypter), nil
+	// Use orchestrator method to build comprehensive response
+	return s.buildUserResponse(ctx, userCopy)
 }
 
 // UpdateCredentials updates a user's authentication credentials.
@@ -1065,7 +1081,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	// Check current status
 	if user.Status == UserStatusActive {
 		s.logger.Info("User is already active", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(s.encrypter), nil
+		return s.buildUserResponse(ctx, user)
 	}
 
 	if user.Status == UserStatusDeactivated {
@@ -1108,7 +1124,7 @@ func (s *userService) ActivateUser(ctx context.Context, userID string) (*UserRes
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(s.encrypter), nil
+	return s.buildUserResponse(ctx, userCopy)
 }
 
 // SuspendUser suspends a user account
@@ -1149,7 +1165,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 
 	if user.Status == UserStatusSuspended {
 		s.logger.Info("User is already suspended", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(s.encrypter), nil
+		return s.buildUserResponse(ctx, user)
 	}
 
 	// Clone user to avoid race conditions
@@ -1186,7 +1202,7 @@ func (s *userService) SuspendUser(ctx context.Context, userID string, reason str
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(s.encrypter), nil
+	return s.buildUserResponse(ctx, userCopy)
 }
 
 // DeactivateUser deactivates a user account
@@ -1223,7 +1239,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	// Check if user is already deactivated
 	if user.Status == UserStatusDeactivated {
 		s.logger.Info("User is already deactivated", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(s.encrypter), nil
+		return s.buildUserResponse(ctx, user)
 	}
 
 	// Clone user to avoid race conditions
@@ -1260,7 +1276,7 @@ func (s *userService) DeactivateUser(ctx context.Context, userID string, reason 
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(s.encrypter), nil
+	return s.buildUserResponse(ctx, userCopy)
 }
 
 // LockUser locks a user account
@@ -1361,7 +1377,7 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(s.encrypter), nil
+	return s.buildUserResponse(ctx, userCopy)
 }
 
 // UnlockUser unlocks a user account
@@ -1404,13 +1420,13 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 		}
 		// No security record means not locked
 		s.logger.Info("User has no security record, treating as not locked", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(s.encrypter), nil
+		return s.buildUserResponse(ctx, user)
 	}
 
 	// Check if user is actually locked
 	if !security.IsLocked() && user.Status != UserStatusLocked {
 		s.logger.Info("User is not locked", logger.Field{Key: "user_id", Value: userID})
-		return user.ToUserResponse(s.encrypter), nil
+		return s.buildUserResponse(ctx, user)
 	}
 
 	// Clone user to avoid race conditions
@@ -1452,7 +1468,7 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	})
 	counter.Inc()
 
-	return userCopy.ToUserResponse(s.encrypter), nil
+	return s.buildUserResponse(ctx, userCopy)
 }
 
 // ListUsers retrieves users with pagination and filtering
@@ -1491,10 +1507,18 @@ func (s *userService) ListUsers(ctx context.Context, req *ListUsersRequest) (*Li
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to retrieve users")
 	}
 
-	// Convert to response DTOs
+	// Convert to response DTOs using orchestrator pattern
 	userResponses := make([]*UserResponse, len(users))
 	for i, user := range users {
-		userResponses[i] = user.ToUserResponse(s.encrypter)
+		if response, err := s.buildUserResponse(ctx, user); err != nil {
+			// Log error but continue with basic response
+			s.logger.Warn("Failed to build comprehensive response for user in list",
+				logger.Field{Key: "error", Value: err.Error()},
+				logger.Field{Key: "user_id", Value: user.ID})
+			userResponses[i] = user.ToUserResponse(s.encrypter)
+		} else {
+			userResponses[i] = response
+		}
 	}
 
 	// Calculate if there are more results
@@ -1676,4 +1700,85 @@ func (s *userService) convertCredentials(providerType auth.ProviderType, credent
 	default:
 		return nil, errors.NewValidationError("provider_type", fmt.Sprintf("unsupported provider type: %s", providerType))
 	}
+}
+
+// buildUserResponse orchestrates data from multiple repositories to create a comprehensive UserResponse.
+// This method demonstrates the service layer's role as an orchestrator, combining data from:
+// - UserRepository: Profile data, status, basic metadata
+// - UserSecurityRepository: Security state, login attempts, locks, last login
+// - AuthenticationRepository: Available authentication providers
+// This is a key Go best practice: keep business logic in the service layer.
+func (s *userService) buildUserResponse(ctx context.Context, user *User) (*UserResponse, error) {
+	// Start with base user response
+	response := user.ToUserResponse(s.encrypter)
+
+	// Enhance with security data from UserSecurityRepository
+	if security, err := s.securityRepository.GetSecurity(ctx, user.ID); err == nil {
+		response.LastLoginAt = security.LastLoginAt
+		response.AccountLocked = security.IsLocked()
+		// Note: LoginAttempts and LockedUntil are included in DetailedUserResponse, not UserResponse
+	} else if !errors.IsErrorType(err, errors.ErrUserNotFound) {
+		// Log error but don't fail the entire request
+		s.logger.Warn("Failed to get security data for user response",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+	}
+
+	// Enhance with authentication provider data from AuthenticationRepository
+	if providers, err := s.authRepository.GetActiveProviders(ctx, user.ID); err == nil {
+		response.AvailableAuthProviders = providers
+		if len(providers) > 0 {
+			// Set primary provider (could be business logic to determine which is primary)
+			response.PrimaryAuthProvider = providers[0]
+		}
+	} else if !errors.IsErrorType(err, errors.ErrUserNotFound) {
+		// Log error but don't fail the entire request
+		s.logger.Warn("Failed to get authentication providers for user response",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+	}
+
+	// Set computed display name (requires logger for fallback)
+	response.DisplayName = user.GetDisplayName(s.encrypter, s.logger)
+
+	return response, nil
+}
+
+// buildDetailedUserResponse creates a comprehensive DetailedUserResponse with data from all repositories.
+// This is used for administrative operations that need complete user information.
+func (s *userService) buildDetailedUserResponse(ctx context.Context, user *User) (*DetailedUserResponse, error) {
+	// Start with base detailed response
+	baseResponse := user.ToDetailedUserResponse(s.encrypter)
+
+	// Enhance with security data from UserSecurityRepository
+	if security, err := s.securityRepository.GetSecurity(ctx, user.ID); err == nil {
+		// Update UserResponse fields
+		baseResponse.UserResponse.LastLoginAt = security.LastLoginAt
+		baseResponse.UserResponse.AccountLocked = security.IsLocked()
+
+		// Update DetailedUserResponse specific fields
+		baseResponse.LoginAttempts = security.LoginAttempts
+		baseResponse.LockedUntil = security.LockedUntil
+	} else if !errors.IsErrorType(err, errors.ErrUserNotFound) {
+		s.logger.Warn("Failed to get security data for detailed user response",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+	}
+
+	// Enhance with authentication provider data
+	if providers, err := s.authRepository.GetActiveProviders(ctx, user.ID); err == nil {
+		baseResponse.UserResponse.AvailableAuthProviders = providers
+		if len(providers) > 0 {
+			baseResponse.UserResponse.PrimaryAuthProvider = providers[0]
+		}
+	} else if !errors.IsErrorType(err, errors.ErrUserNotFound) {
+		s.logger.Warn("Failed to get authentication providers for detailed user response",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+	}
+
+	// Set computed display name
+	baseResponse.UserResponse.DisplayName = user.GetDisplayName(s.encrypter, s.logger)
+
+	return baseResponse, nil
 }
