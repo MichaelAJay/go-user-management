@@ -317,8 +317,8 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	}
 
 	// Create credentials using the new credential architecture
-	// Encrypt the prepared auth data
-	encryptedAuthData, err := s.encrypter.Encrypt([]byte(fmt.Sprintf("%v", authData))) // TODO: Proper serialization
+	// Encrypt the serialized auth data (authData is already []byte from provider)
+	encryptedAuthData, err := s.encrypter.Encrypt(authData)
 	if err != nil {
 		s.logger.Error("Failed to encrypt auth data", logger.Field{Key: "error", Value: err.Error()})
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to encrypt auth data")
@@ -458,7 +458,15 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	}
 
 	// Use the provider to authenticate with stored data
-	authResult, err := provider.Authenticate(ctx, user.ID, convertedCredentials, credentials.EncryptedAuthData)
+	// First decrypt the stored auth data to get raw serialized bytes
+	decryptedAuthData, err := s.encrypter.Decrypt(credentials.EncryptedAuthData)
+	if err != nil {
+		s.logger.Error("Failed to decrypt auth data", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Authentication failed")
+	}
+
+	// Pass raw bytes to provider - provider handles its own deserialization
+	authResult, err := provider.Authenticate(ctx, user.ID, convertedCredentials, decryptedAuthData)
 	if err != nil {
 		// Get security state to process failed authentication
 		security, secErr := s.securityRepository.GetSecurity(ctx, user.ID)
@@ -962,6 +970,9 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot update credentials for deactivated user")
 	}
 
+	// Clone user to avoid race conditions
+	userCopy := user.Clone()
+
 	// Convert credentials to proper types for the provider
 	convertedNewCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.NewCredentials)
 	if err != nil {
@@ -974,19 +985,19 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 
 	// Validate new credentials using authentication manager
 	// Get decrypted user info for validation
-	decryptedFirstName, err := s.encrypter.Decrypt(user.FirstName)
+	decryptedFirstName, err := s.encrypter.Decrypt(userCopy.FirstName)
 	if err != nil {
 		s.logger.Error("Failed to decrypt first name for credential validation", logger.Field{Key: "error", Value: err.Error()})
 		decryptedFirstName = []byte("")
 	}
 
-	decryptedLastName, err := s.encrypter.Decrypt(user.LastName)
+	decryptedLastName, err := s.encrypter.Decrypt(userCopy.LastName)
 	if err != nil {
 		s.logger.Error("Failed to decrypt last name for credential validation", logger.Field{Key: "error", Value: err.Error()})
 		decryptedLastName = []byte("")
 	}
 
-	decryptedEmail, err := s.encrypter.Decrypt(user.Email)
+	decryptedEmail, err := s.encrypter.Decrypt(userCopy.Email)
 	if err != nil {
 		s.logger.Error("Failed to decrypt email for credential validation", logger.Field{Key: "error", Value: err.Error()})
 		decryptedEmail = []byte("")
@@ -997,7 +1008,7 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		FirstName: string(decryptedFirstName),
 		LastName:  string(decryptedLastName),
 		Email:     string(decryptedEmail),
-		CreatedAt: user.CreatedAt,
+		CreatedAt: userCopy.CreatedAt,
 	}
 
 	if err := s.authManager.ValidateCredentials(ctx, req.AuthenticationProvider, convertedNewCredentials, userInfo); err != nil {
@@ -1008,9 +1019,6 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		return err
 	}
 
-	// Clone the user to avoid race conditions
-	userCopy := user.Clone()
-
 	// Update user authentication data using the new credential architecture
 	// Get current credentials
 	currentCredentials, err := s.authRepository.GetCredentials(ctx, userID, req.AuthenticationProvider)
@@ -1019,8 +1027,42 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		return errors.NewAppError(errors.CodeInternalError, "Failed to get current credentials")
 	}
 
-	// Update credentials using the new architecture
-	if err := currentCredentials.UpdateAuthData(nil); err != nil { // TODO: encrypt newAuthData properly
+	// Decrypt current auth data to get raw serialized bytes
+	decryptedCurrentAuthData, err := s.encrypter.Decrypt(currentCredentials.EncryptedAuthData)
+	if err != nil {
+		s.logger.Error("Failed to decrypt current auth data", logger.Field{Key: "error", Value: err.Error()})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to process current credentials")
+	}
+
+	// Convert current and new credentials to proper types
+	convertedCurrentCredentials, err := s.convertCredentials(req.AuthenticationProvider, req.CurrentCredentials)
+	if err != nil {
+		return err
+	}
+
+	// Use the provider to update credentials
+	provider, err := s.authManager.GetProvider(req.AuthenticationProvider)
+	if err != nil {
+		s.logger.Error("Authentication provider not found", logger.Field{Key: "provider", Value: string(req.AuthenticationProvider)})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to get authentication provider")
+	}
+
+	// Update credentials using the provider - provider handles its own serialization
+	newAuthData, err := provider.UpdateCredentials(ctx, userID, convertedCurrentCredentials, convertedNewCredentials, decryptedCurrentAuthData)
+	if err != nil {
+		s.logger.Error("Failed to update credentials via provider", logger.Field{Key: "error", Value: err.Error()})
+		return err
+	}
+
+	// Encrypt the new auth data (newAuthData is already []byte from provider)
+	encryptedNewAuthData, err := s.encrypter.Encrypt(newAuthData)
+	if err != nil {
+		s.logger.Error("Failed to encrypt new auth data", logger.Field{Key: "error", Value: err.Error()})
+		return errors.NewAppError(errors.CodeInternalError, "Failed to encrypt new auth data")
+	}
+
+	// Update credentials with new encrypted data
+	if err := currentCredentials.UpdateAuthData(encryptedNewAuthData); err != nil {
 		s.logger.Error("Failed to update credential data", logger.Field{Key: "error", Value: err.Error()})
 		return errors.NewAppError(errors.CodeInternalError, "Failed to update credentials")
 	}

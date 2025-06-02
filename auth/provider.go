@@ -14,8 +14,9 @@ import (
 type AuthenticationProvider interface {
 	// Authenticate verifies user credentials and returns authentication result.
 	// The credentials parameter is provider-specific (e.g., password, OAuth token, etc.).
+	// The storedAuthData parameter contains the raw serialized auth data for this provider.
 	// Returns AuthenticationResult with user information and session data on success.
-	Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData any) (*AuthenticationResult, error)
+	Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData []byte) (*AuthenticationResult, error)
 
 	// ValidateCredentials checks if the provided credentials meet the provider's requirements.
 	// This is used during user registration or credential updates.
@@ -24,13 +25,15 @@ type AuthenticationProvider interface {
 
 	// UpdateCredentials updates the user's credentials for this provider.
 	// The oldCredentials parameter is used for verification before updating.
-	// Returns the new credential data to be stored with the user.
-	UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error)
+	// The storedAuthData parameter contains the current serialized auth data.
+	// Returns the new serialized credential data to be stored with the user.
+	UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData []byte) ([]byte, error)
 
 	// PrepareCredentials prepares credentials for storage (e.g., hashing passwords).
 	// This method is called during user creation to transform raw credentials
 	// into a format suitable for storage.
-	PrepareCredentials(ctx context.Context, credentials any) (any, error)
+	// Returns serialized credential data ready for encryption and storage.
+	PrepareCredentials(ctx context.Context, credentials any) ([]byte, error)
 
 	// GetProviderType returns the type identifier for this authentication provider.
 	// This is used for routing authentication requests to the correct provider.

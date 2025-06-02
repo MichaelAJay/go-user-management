@@ -473,18 +473,21 @@ type mockAuthManager struct {
 	providers               map[auth.ProviderType]auth.AuthenticationProvider
 	authenticateFunc        func(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error)
 	validateCredentialsFunc func(ctx context.Context, providerType auth.ProviderType, credentials any, userInfo *auth.UserInfo) error
-	updateCredentialsFunc   func(ctx context.Context, req *auth.CredentialUpdateRequest) (any, error)
-	prepareCredentialsFunc  func(ctx context.Context, providerType auth.ProviderType, credentials any) (any, error)
+	updateCredentialsFunc   func(ctx context.Context, req *auth.CredentialUpdateRequest) ([]byte, error)
+	prepareCredentialsFunc  func(ctx context.Context, providerType auth.ProviderType, credentials any) ([]byte, error)
 	getProviderFunc         func(providerType auth.ProviderType) (auth.AuthenticationProvider, error)
 }
 
 func newMockAuthManager() auth.Manager { // Return the interface type
-	mockProvider := newMockPasswordProvider()
-	providers := make(map[auth.ProviderType]auth.AuthenticationProvider)
-	providers[auth.ProviderTypePassword] = mockProvider
-
 	return &mockAuthManager{
-		providers: providers,
+		providers: make(map[auth.ProviderType]auth.AuthenticationProvider),
+		// Set default mock implementations that return valid []byte data
+		prepareCredentialsFunc: func(ctx context.Context, providerType auth.ProviderType, credentials any) ([]byte, error) {
+			return []byte("mock-prepared-credentials"), nil
+		},
+		updateCredentialsFunc: func(ctx context.Context, req *auth.CredentialUpdateRequest) ([]byte, error) {
+			return []byte("mock-updated-credentials"), nil
+		},
 	}
 }
 
@@ -519,18 +522,18 @@ func (m *mockAuthManager) ValidateCredentials(ctx context.Context, providerType 
 	return nil
 }
 
-func (m *mockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) (any, error) {
+func (m *mockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) ([]byte, error) {
 	if m.updateCredentialsFunc != nil {
 		return m.updateCredentialsFunc(ctx, req)
 	}
-	return req.NewCredentials, nil
+	return []byte("mock-updated-credentials"), nil
 }
 
-func (m *mockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials any) (any, error) {
+func (m *mockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials any) ([]byte, error) {
 	if m.prepareCredentialsFunc != nil {
 		return m.prepareCredentialsFunc(ctx, providerType, credentials)
 	}
-	return credentials, nil
+	return []byte("mock-prepared-credentials"), nil
 }
 
 func (m *mockAuthManager) ListProviders() []auth.ProviderType {
@@ -548,16 +551,16 @@ func (m *mockAuthManager) HasProvider(providerType auth.ProviderType) bool {
 
 // Mock Password Provider Implementation for testing password verification
 type mockPasswordProvider struct {
-	authenticateFunc        func(ctx context.Context, identifier string, credentials any, storedAuthData any) (*auth.AuthenticationResult, error)
+	authenticateFunc        func(ctx context.Context, identifier string, credentials any, storedAuthData []byte) (*auth.AuthenticationResult, error)
 	validateCredentialsFunc func(ctx context.Context, credentials any, userInfo *auth.UserInfo) error
-	updateCredentialsFunc   func(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error)
-	prepareCredentialsFunc  func(ctx context.Context, credentials any) (any, error)
+	updateCredentialsFunc   func(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData []byte) ([]byte, error)
+	prepareCredentialsFunc  func(ctx context.Context, credentials any) ([]byte, error)
 	verifyPasswordFunc      func(ctx context.Context, storedAuthData any, password string) (bool, error)
 }
 
 func newMockPasswordProvider() *mockPasswordProvider {
 	return &mockPasswordProvider{
-		authenticateFunc: func(ctx context.Context, identifier string, credentials any, storedAuthData any) (*auth.AuthenticationResult, error) {
+		authenticateFunc: func(ctx context.Context, identifier string, credentials any, storedAuthData []byte) (*auth.AuthenticationResult, error) {
 			// Default: check for correct test password
 			if creds, ok := credentials.(*password.PasswordCredentials); ok {
 				if creds.Password == "StrongPass123!" {
@@ -576,11 +579,11 @@ func newMockPasswordProvider() *mockPasswordProvider {
 			}
 			return nil
 		},
-		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error) {
-			return newCredentials, nil
+		updateCredentialsFunc: func(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData []byte) ([]byte, error) {
+			return []byte("mock-updated-credentials"), nil
 		},
-		prepareCredentialsFunc: func(ctx context.Context, credentials any) (any, error) {
-			return credentials, nil
+		prepareCredentialsFunc: func(ctx context.Context, credentials any) ([]byte, error) {
+			return []byte("mock-prepared-credentials"), nil
 		},
 		verifyPasswordFunc: func(ctx context.Context, storedAuthData any, password string) (bool, error) {
 			// Default verification logic
@@ -594,7 +597,7 @@ func newMockPasswordProvider() *mockPasswordProvider {
 	}
 }
 
-func (m *mockPasswordProvider) Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData any) (*auth.AuthenticationResult, error) {
+func (m *mockPasswordProvider) Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData []byte) (*auth.AuthenticationResult, error) {
 	if m.authenticateFunc != nil {
 		return m.authenticateFunc(ctx, identifier, credentials, storedAuthData)
 	}
@@ -608,18 +611,18 @@ func (m *mockPasswordProvider) ValidateCredentials(ctx context.Context, credenti
 	return nil
 }
 
-func (m *mockPasswordProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error) {
+func (m *mockPasswordProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData []byte) ([]byte, error) {
 	if m.updateCredentialsFunc != nil {
 		return m.updateCredentialsFunc(ctx, userID, oldCredentials, newCredentials, storedAuthData)
 	}
-	return newCredentials, nil
+	return []byte("mock-updated-credentials"), nil
 }
 
-func (m *mockPasswordProvider) PrepareCredentials(ctx context.Context, credentials any) (any, error) {
+func (m *mockPasswordProvider) PrepareCredentials(ctx context.Context, credentials any) ([]byte, error) {
 	if m.prepareCredentialsFunc != nil {
 		return m.prepareCredentialsFunc(ctx, credentials)
 	}
-	return credentials, nil
+	return []byte("mock-prepared-credentials"), nil
 }
 
 func (m *mockPasswordProvider) GetProviderType() auth.ProviderType {

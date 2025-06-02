@@ -22,10 +22,10 @@ type Manager interface {
 	ValidateCredentials(ctx context.Context, providerType ProviderType, credentials any, userInfo *UserInfo) error
 
 	// UpdateCredentials updates credentials using the specified provider
-	UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) (any, error)
+	UpdateCredentials(ctx context.Context, req *CredentialUpdateRequest) ([]byte, error)
 
 	// PrepareCredentials prepares credentials for storage using the specified provider
-	PrepareCredentials(ctx context.Context, providerType ProviderType, credentials any) (any, error)
+	PrepareCredentials(ctx context.Context, providerType ProviderType, credentials any) ([]byte, error)
 
 	// ListProviders returns a list of registered provider types
 	ListProviders() []ProviderType

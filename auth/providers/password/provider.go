@@ -9,6 +9,7 @@ import (
 	"github.com/MichaelAJay/go-encrypter"
 	"github.com/MichaelAJay/go-logger"
 	"github.com/MichaelAJay/go-metrics"
+	"github.com/MichaelAJay/go-serializer"
 	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
 	"github.com/MichaelAJay/go-user-management/validation"
@@ -26,6 +27,7 @@ type Provider struct {
 	metrics           metrics.Registry
 	config            config.Config
 	passwordValidator *validation.PasswordValidator
+	serializer        serializer.Serializer
 }
 
 // Config contains configuration options for the password provider.
@@ -75,17 +77,25 @@ func NewProvider(
 	passwordValidator.RequireNumbers = providerConfig.RequireNumber
 	passwordValidator.RequireSpecialChars = providerConfig.RequireSpecial
 
+	// Initialize serializer for handling StoredPasswordData
+	authSerializer, err := serializer.DefaultRegistry.New(serializer.JSON)
+	if err != nil {
+		// Fallback to a new JSON serializer if registry fails
+		authSerializer = serializer.NewJSONSerializer()
+	}
+
 	return &Provider{
 		encrypter:         encrypter,
 		logger:            logger,
 		metrics:           metrics,
 		config:            config,
 		passwordValidator: passwordValidator,
+		serializer:        authSerializer,
 	}
 }
 
 // Authenticate verifies password credentials against stored password data.
-func (p *Provider) Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData any) (*auth.AuthenticationResult, error) {
+func (p *Provider) Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData []byte) (*auth.AuthenticationResult, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -100,8 +110,15 @@ func (p *Provider) Authenticate(ctx context.Context, identifier string, credenti
 		return nil, errors.NewValidationError("credentials", "invalid credential type for password provider")
 	}
 
+	// Deserialize stored auth data to StoredPasswordData
+	var passwordData StoredPasswordData
+	if err := p.serializer.Deserialize(storedAuthData, &passwordData); err != nil {
+		p.logger.Error("Failed to deserialize stored password data", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Invalid stored auth data")
+	}
+
 	// Verify password against stored data
-	valid, err := p.verifyPassword(ctx, storedAuthData, validCredentials.Password)
+	valid, err := p.verifyPassword(ctx, &passwordData, validCredentials.Password)
 	if err != nil || !valid {
 		counter := p.metrics.Counter(metrics.Options{
 			Name: "password_provider.authenticate.failed",
@@ -168,7 +185,7 @@ func (p *Provider) ValidateCredentials(ctx context.Context, credentials any, use
 }
 
 // UpdateCredentials updates password credentials after verification.
-func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData any) (any, error) {
+func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData []byte) ([]byte, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -188,8 +205,15 @@ func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCred
 		return nil, errors.NewValidationError("new_credentials", "invalid credential type for password provider")
 	}
 
+	// Deserialize stored auth data to StoredPasswordData
+	var passwordData StoredPasswordData
+	if err := p.serializer.Deserialize(storedAuthData, &passwordData); err != nil {
+		p.logger.Error("Failed to deserialize stored password data for update", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Invalid stored auth data")
+	}
+
 	// Verify the old password
-	valid, err := p.verifyPassword(ctx, storedAuthData, oldPasswordCreds.Password)
+	valid, err := p.verifyPassword(ctx, &passwordData, oldPasswordCreds.Password)
 	if err != nil || !valid {
 		return nil, errors.NewInvalidCredentialsError()
 	}
@@ -200,7 +224,7 @@ func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCred
 	}
 
 	// Prepare new credentials for storage
-	storedData, err := p.PrepareCredentials(ctx, newPasswordCreds)
+	newStoredData, err := p.PrepareCredentials(ctx, newPasswordCreds)
 	if err != nil {
 		return nil, fmt.Errorf("failed to prepare new credentials: %w", err)
 	}
@@ -211,11 +235,11 @@ func (p *Provider) UpdateCredentials(ctx context.Context, userID string, oldCred
 	})
 	counter.Inc()
 
-	return storedData, nil
+	return newStoredData, nil
 }
 
 // PrepareCredentials hashes the password for secure storage.
-func (p *Provider) PrepareCredentials(ctx context.Context, credentials any) (any, error) {
+func (p *Provider) PrepareCredentials(ctx context.Context, credentials any) ([]byte, error) {
 	startTime := time.Now()
 	defer func() {
 		timer := p.metrics.Timer(metrics.Options{
@@ -244,26 +268,24 @@ func (p *Provider) PrepareCredentials(ctx context.Context, credentials any) (any
 		UpdatedAt:      now,
 	}
 
+	// Serialize the stored data
+	serializedData, err := p.serializer.Serialize(storedData)
+	if err != nil {
+		p.logger.Error("Failed to serialize password data", logger.Field{Key: "error", Value: err.Error()})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to serialize password data")
+	}
+
 	counter := p.metrics.Counter(metrics.Options{
 		Name: "password_provider.prepare_credentials.success",
 	})
 	counter.Inc()
 
-	return storedData, nil
+	return serializedData, nil
 }
 
-// verifyPassword verifies a password against stored password data.// This is a utility method used by the user service during authentication.
-func (p *Provider) verifyPassword(ctx context.Context, storedData any, password string) (bool, error) {
-	// Type assert stored data
-	passwordData, ok := storedData.(*StoredPasswordData)
-	if !ok {
-		p.logger.Error("Invalid stored data type for password provider",
-			logger.Field{Key: "expected_type", Value: "*StoredPasswordData"},
-			logger.Field{Key: "actual_type", Value: fmt.Sprintf("%T", storedData)},
-		)
-		return false, errors.NewValidationError("stored_data", "invalid stored data type for password provider")
-	}
-
+// verifyPassword verifies a password against stored password data.
+// This is a utility method used internally by the provider.
+func (p *Provider) verifyPassword(ctx context.Context, passwordData *StoredPasswordData, password string) (bool, error) {
 	// Verify password using encrypter
 	valid, err := p.encrypter.VerifyPassword(passwordData.HashedPassword, []byte(password))
 	if err != nil {
