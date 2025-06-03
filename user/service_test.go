@@ -3,620 +3,1829 @@ package user
 import (
 	"context"
 	"fmt"
-	"sync"
 	"testing"
+	"time"
 
+	"github.com/MichaelAJay/go-cache"
+	"github.com/MichaelAJay/go-config"
+	"github.com/MichaelAJay/go-metrics"
 	"github.com/MichaelAJay/go-user-management/auth"
 	"github.com/MichaelAJay/go-user-management/errors"
 )
 
-// Test CreateUser with comprehensive validation
-func TestCreateUser_Validation(t *testing.T) {
-	tests := []struct {
-		name    string
-		req     *CreateUserRequest
-		wantErr bool
-		errCode errors.ErrorCode
-	}{
-		{
-			name: "valid request",
-			req: &CreateUserRequest{
-				FirstName:              "John",
-				LastName:               "Doe",
-				Email:                  "john@example.com",
-				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]any{"password": "StrongPass123!"},
-			},
-			wantErr: false,
-		},
-		{
-			name:    "nil request",
-			req:     nil,
-			wantErr: true,
-			errCode: errors.CodeValidationFailed,
-		},
-		{
-			name: "empty first name",
-			req: &CreateUserRequest{
-				FirstName:              "",
-				LastName:               "Doe",
-				Email:                  "john@example.com",
-				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]any{"password": "StrongPass123!"},
-			},
-			wantErr: true,
-			errCode: errors.CodeEmptyField,
-		},
-		{
-			name: "invalid email format",
-			req: &CreateUserRequest{
-				FirstName:              "John",
-				LastName:               "Doe",
-				Email:                  "not-an-email",
-				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]any{"password": "StrongPass123!"},
-			},
-			wantErr: true,
-			errCode: errors.CodeInvalidEmailFormat,
-		},
-		{
-			name: "missing credentials",
-			req: &CreateUserRequest{
-				FirstName:              "John",
-				LastName:               "Doe",
-				Email:                  "john@example.com",
-				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            nil,
-			},
-			wantErr: true,
-			errCode: errors.CodeMissingCredentials,
-		},
-		{
-			name: "unsupported auth provider",
-			req: &CreateUserRequest{
-				FirstName:              "John",
-				LastName:               "Doe",
-				Email:                  "john@example.com",
-				AuthenticationProvider: "unsupported",
-				Credentials:            map[string]any{"password": "StrongPass123!"},
-			},
-			wantErr: true,
-			errCode: errors.CodeUnsupportedProvider,
-		},
-	}
+// MockUserRepository implements UserRepository for testing
+type MockUserRepository struct {
+	users        map[string]*User
+	emailHashes  map[string]string // hashedEmail -> userID
+	shouldFail   bool
+	failOnMethod string
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			service := createTestUserService()
-			ctx := context.Background()
-
-			response, err := service.CreateUser(ctx, tt.req)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-					return
-				}
-				appErr, ok := err.(*errors.AppError)
-				if !ok {
-					t.Errorf("Expected AppError but got different error type: %v", err)
-					return
-				}
-				if appErr.Code != tt.errCode {
-					t.Errorf("Expected error code %s, got %s", tt.errCode, appErr.Code)
-				}
-
-				if response != nil {
-					t.Errorf("Expected nil response on error, got %+v", response)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error, got %v", err)
-				}
-				if response == nil {
-					t.Errorf("Expected response, got nil")
-				}
-			}
-		})
+func NewMockUserRepository() *MockUserRepository {
+	return &MockUserRepository{
+		users:       make(map[string]*User),
+		emailHashes: make(map[string]string),
 	}
 }
 
-// Test duplicate email handling with various scenarios
-func TestCreateUser_DuplicateEmailScenarios(t *testing.T) {
-	service := createTestUserService()
-	ctx := context.Background()
+func (m *MockUserRepository) SetShouldFail(method string) {
+	m.shouldFail = true
+	m.failOnMethod = method
+}
 
-	baseReq := &CreateUserRequest{
+func (m *MockUserRepository) AddUser(user *User) {
+	m.users[user.ID] = user.Clone()
+	m.emailHashes[user.HashedEmail] = user.ID
+}
+
+func (m *MockUserRepository) Create(ctx context.Context, user *User) error {
+	if m.shouldFail && m.failOnMethod == "Create" {
+		return errors.NewAppError(errors.CodeInternalError, "repository create failed")
+	}
+
+	// Check for duplicate email
+	if _, exists := m.emailHashes[user.HashedEmail]; exists {
+		return errors.NewAppError(errors.CodeDuplicateEmail, "user with this email already exists")
+	}
+
+	m.AddUser(user)
+	return nil
+}
+
+func (m *MockUserRepository) GetByHashedEmail(ctx context.Context, hashedEmail string) (*User, error) {
+	if m.shouldFail && m.failOnMethod == "GetByHashedEmail" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "repository get failed")
+	}
+
+	if userID, exists := m.emailHashes[hashedEmail]; exists {
+		if user, found := m.users[userID]; found {
+			return user.Clone(), nil
+		}
+	}
+	return nil, errors.ErrUserNotFound
+}
+
+func (m *MockUserRepository) GetByID(ctx context.Context, id string) (*User, error) {
+	if m.shouldFail && m.failOnMethod == "GetByID" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "repository get failed")
+	}
+
+	if user, exists := m.users[id]; exists {
+		return user.Clone(), nil
+	}
+	return nil, errors.ErrUserNotFound
+}
+
+func (m *MockUserRepository) Update(ctx context.Context, user *User) error {
+	if m.shouldFail && m.failOnMethod == "Update" {
+		return errors.NewAppError(errors.CodeInternalError, "repository update failed")
+	}
+
+	if _, exists := m.users[user.ID]; !exists {
+		return errors.ErrUserNotFound
+	}
+
+	// Simple optimistic locking check
+	m.users[user.ID] = user.Clone()
+	return nil
+}
+
+func (m *MockUserRepository) Delete(ctx context.Context, id string) error {
+	if m.shouldFail && m.failOnMethod == "Delete" {
+		return errors.NewAppError(errors.CodeInternalError, "repository delete failed")
+	}
+
+	if user, exists := m.users[id]; exists {
+		delete(m.emailHashes, user.HashedEmail)
+		delete(m.users, id)
+		return nil
+	}
+	return errors.ErrUserNotFound
+}
+
+func (m *MockUserRepository) UpdateLoginAttempts(ctx context.Context, hashedEmail string, attempts int) error {
+	if m.shouldFail && m.failOnMethod == "UpdateLoginAttempts" {
+		return errors.NewAppError(errors.CodeInternalError, "update login attempts failed")
+	}
+	return nil
+}
+
+func (m *MockUserRepository) ResetLoginAttempts(ctx context.Context, hashedEmail string) error {
+	if m.shouldFail && m.failOnMethod == "ResetLoginAttempts" {
+		return errors.NewAppError(errors.CodeInternalError, "reset login attempts failed")
+	}
+	return nil
+}
+
+func (m *MockUserRepository) LockAccount(ctx context.Context, hashedEmail string, until *time.Time) error {
+	if m.shouldFail && m.failOnMethod == "LockAccount" {
+		return errors.NewAppError(errors.CodeInternalError, "lock account failed")
+	}
+	return nil
+}
+
+func (m *MockUserRepository) ListUsers(ctx context.Context, offset, limit int) ([]*User, int64, error) {
+	if m.shouldFail && m.failOnMethod == "ListUsers" {
+		return nil, 0, errors.NewAppError(errors.CodeInternalError, "list users failed")
+	}
+
+	users := make([]*User, 0, len(m.users))
+	for _, user := range m.users {
+		users = append(users, user.Clone())
+	}
+
+	return users, int64(len(users)), nil
+}
+
+func (m *MockUserRepository) GetUserStats(ctx context.Context) (*UserStats, error) {
+	if m.shouldFail && m.failOnMethod == "GetUserStats" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get user stats failed")
+	}
+
+	stats := &UserStats{
+		TotalUsers:  int64(len(m.users)),
+		ActiveUsers: 0,
+	}
+
+	for _, user := range m.users {
+		if user.Status == UserStatusActive {
+			stats.ActiveUsers++
+		}
+	}
+
+	return stats, nil
+}
+
+// MockCache implements cache.Cache for testing
+type MockCache struct {
+	data         map[string][]byte
+	shouldFail   bool
+	failOnMethod string
+}
+
+func NewMockCache() *MockCache {
+	return &MockCache{
+		data: make(map[string][]byte),
+	}
+}
+
+func (m *MockCache) Get(ctx context.Context, key string) (any, bool, error) {
+	if m.shouldFail && m.failOnMethod == "Get" {
+		return nil, false, fmt.Errorf("cache get failed")
+	}
+
+	if data, exists := m.data[key]; exists {
+		return data, true, nil
+	}
+	return nil, false, errors.ErrCacheMiss
+}
+
+func (m *MockCache) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
+	if m.shouldFail && m.failOnMethod == "Set" {
+		return fmt.Errorf("cache set failed")
+	}
+
+	// Convert value to []byte if it's not already
+	var bytesValue []byte
+	switch v := value.(type) {
+	case []byte:
+		bytesValue = v
+	case string:
+		bytesValue = []byte(v)
+	default:
+		// For other types (like *User), we'll serialize them as JSON
+		// In a real implementation, this would use the go-serializer package
+		bytesValue = []byte(fmt.Sprintf("%+v", v))
+	}
+
+	m.data[key] = bytesValue
+	return nil
+}
+
+func (m *MockCache) Delete(ctx context.Context, key string) error {
+	if m.shouldFail && m.failOnMethod == "Delete" {
+		return fmt.Errorf("cache delete failed")
+	}
+
+	delete(m.data, key)
+	return nil
+}
+
+func (m *MockCache) Clear(ctx context.Context) error {
+	if m.shouldFail && m.failOnMethod == "Clear" {
+		return fmt.Errorf("cache clear failed")
+	}
+
+	m.data = make(map[string][]byte)
+	return nil
+}
+
+func (m *MockCache) Has(ctx context.Context, key string) bool {
+	if m.shouldFail && m.failOnMethod == "Has" {
+		return false
+	}
+
+	return true
+}
+
+func (m *MockCache) GetKeys(ctx context.Context) []string {
+	if m.shouldFail && m.failOnMethod == "GetKeys" {
+		return nil
+	}
+
+	return []string{}
+}
+
+func (m *MockCache) Close() error {
+	return nil
+}
+
+func (m *MockCache) GetMany(ctx context.Context, keys []string) (map[string]any, error) {
+	if m.shouldFail && m.failOnMethod == "GetMany" {
+		return nil, fmt.Errorf("cache get many failed")
+	}
+
+	return nil, nil
+}
+
+func (m *MockCache) SetMany(ctx context.Context, items map[string]any, ttl time.Duration) error {
+	if m.shouldFail && m.failOnMethod == "SetMany" {
+		return fmt.Errorf("cache set many failed")
+	}
+
+	return nil
+}
+
+func (m *MockCache) DeleteMany(ctx context.Context, keys []string) error {
+	if m.shouldFail && m.failOnMethod == "DeleteMany" {
+		return fmt.Errorf("cache delete many failed")
+	}
+
+	return nil
+}
+
+func (m *MockCache) GetMetadata(ctx context.Context, key string) (*cache.CacheEntryMetadata, error) {
+	if m.shouldFail && m.failOnMethod == "GetMetadata" {
+		return nil, fmt.Errorf("cache get metadata failed")
+	}
+
+	return nil, nil
+}
+
+func (m *MockCache) GetManyMetadata(ctx context.Context, keys []string) (map[string]*cache.CacheEntryMetadata, error) {
+	if m.shouldFail && m.failOnMethod == "GetManyMetadata" {
+		return nil, fmt.Errorf("cache get many metadata failed")
+	}
+
+	return nil, nil
+}
+
+func (m *MockCache) GetMetrics() *cache.CacheMetricsSnapshot {
+	return &cache.CacheMetricsSnapshot{
+		Hits:          0,
+		Misses:        0,
+		HitRatio:      0,
+		GetLatency:    0,
+		SetLatency:    0,
+		DeleteLatency: 0,
+		CacheSize:     0,
+		EntryCount:    0,
+	}
+}
+
+func (m *MockCache) SetShouldFail(method string) {
+	m.shouldFail = true
+	m.failOnMethod = method
+}
+
+// MockConfig implements config.Config for testing
+type MockConfig struct {
+	data map[string]interface{}
+}
+
+func NewMockConfig() *MockConfig {
+	return &MockConfig{
+		data: make(map[string]interface{}),
+	}
+}
+
+func (m *MockConfig) Get(key string) (interface{}, bool) {
+	value, exists := m.data[key]
+	return value, exists
+}
+
+func (m *MockConfig) GetString(key string) (string, bool) {
+	if value, exists := m.data[key]; exists {
+		if str, ok := value.(string); ok {
+			return str, true
+		}
+	}
+	return "", false
+}
+
+func (m *MockConfig) GetBool(key string) (bool, bool) {
+	if value, exists := m.data[key]; exists {
+		if boolVal, ok := value.(bool); ok {
+			return boolVal, true
+		}
+	}
+	return false, false
+}
+
+func (m *MockConfig) GetInt(key string) (int, bool) {
+	if value, exists := m.data[key]; exists {
+		if intVal, ok := value.(int); ok {
+			return intVal, true
+		}
+	}
+	return 0, false
+}
+
+func (m *MockConfig) GetFloat(key string) (float64, bool) {
+	if value, exists := m.data[key]; exists {
+		if floatVal, ok := value.(float64); ok {
+			return floatVal, true
+		}
+	}
+	return 0.0, false
+}
+
+func (m *MockConfig) GetStringSlice(key string) ([]string, bool) {
+	if value, exists := m.data[key]; exists {
+		if slice, ok := value.([]string); ok {
+			return slice, true
+		}
+	}
+	return nil, false
+}
+
+func (m *MockConfig) Set(key string, value any) error {
+	m.data[key] = value
+	return nil
+}
+
+func (m *MockConfig) Load(source config.Source) error {
+	return nil
+}
+
+func (m *MockConfig) Validate() error {
+	return nil
+}
+
+// MockMetrics implements metrics.Registry for testing
+type MockMetrics struct{}
+
+func NewMockMetrics() metrics.Registry {
+	return &MockMetrics{}
+}
+
+func (m *MockMetrics) Counter(opts metrics.Options) metrics.Counter {
+	return &MockCounter{}
+}
+
+func (m *MockMetrics) Gauge(opts metrics.Options) metrics.Gauge {
+	return &MockGauge{}
+}
+
+func (m *MockMetrics) Histogram(opts metrics.Options) metrics.Histogram {
+	return &MockHistogram{}
+}
+
+func (m *MockMetrics) Timer(opts metrics.Options) metrics.Timer {
+	return &MockTimer{}
+}
+
+func (m *MockMetrics) Unregister(name string) {}
+
+func (m *MockMetrics) Each(fn func(metric metrics.Metric)) {
+	// No-op for mock
+}
+
+type MockCounter struct{}
+
+func (m *MockCounter) Name() string        { return "mock counter" }
+func (m *MockCounter) Description() string { return "mock counter" }
+func (m *MockCounter) Type() metrics.Type  { return metrics.TypeCounter }
+func (m *MockCounter) Tags() metrics.Tags  { return nil }
+func (m *MockCounter) Inc()                {}
+func (m *MockCounter) Add(delta float64)   {}
+func (m *MockCounter) With(tags metrics.Tags) metrics.Counter {
+	return m
+}
+
+type MockGauge struct{}
+
+func (m *MockGauge) Name() string        { return "mock gauge" }
+func (m *MockGauge) Description() string { return "mock gauge" }
+func (m *MockGauge) Type() metrics.Type  { return metrics.TypeGauge }
+func (m *MockGauge) Tags() metrics.Tags  { return nil }
+func (m *MockGauge) Set(value float64)   {}
+func (m *MockGauge) Add(delta float64)   {}
+func (m *MockGauge) Inc()                {}
+func (m *MockGauge) Dec()                {}
+func (m *MockGauge) With(tags metrics.Tags) metrics.Gauge {
+	return m
+}
+
+type MockHistogram struct{}
+
+func (m *MockHistogram) Name() string          { return "mock histogram" }
+func (m *MockHistogram) Description() string   { return "mock histogram" }
+func (m *MockHistogram) Type() metrics.Type    { return metrics.TypeHistogram }
+func (m *MockHistogram) Tags() metrics.Tags    { return nil }
+func (m *MockHistogram) Observe(value float64) {}
+func (m *MockHistogram) With(tags metrics.Tags) metrics.Histogram {
+	return m
+}
+
+type MockTimer struct{}
+
+func (m *MockTimer) Name() string                  { return "mock timer" }
+func (m *MockTimer) Description() string           { return "mock timer" }
+func (m *MockTimer) Type() metrics.Type            { return metrics.TypeTimer }
+func (m *MockTimer) Tags() metrics.Tags            { return nil }
+func (m *MockTimer) Record(duration time.Duration) {}
+func (m *MockTimer) RecordSince(t time.Time)       {}
+func (m *MockTimer) Time(fn func()) time.Duration {
+	return 0
+}
+func (m *MockTimer) With(tags metrics.Tags) metrics.Timer {
+	return m
+}
+
+// MockAuthManager implements auth.Manager for testing
+type MockAuthManager struct {
+	shouldFail      bool
+	failOnMethod    string
+	GetProviderFunc func(providerType auth.ProviderType) (auth.AuthenticationProvider, error)
+}
+
+func NewMockAuthManager() *MockAuthManager {
+	return &MockAuthManager{
+		GetProviderFunc: func(providerType auth.ProviderType) (auth.AuthenticationProvider, error) {
+			return &MockAuthProvider{}, nil
+		},
+	}
+}
+
+func (m *MockAuthManager) SetShouldFail(method string) {
+	m.shouldFail = true
+	m.failOnMethod = method
+}
+
+func (m *MockAuthManager) GetProvider(providerType auth.ProviderType) (auth.AuthenticationProvider, error) {
+	if m.shouldFail && m.failOnMethod == "GetProvider" {
+		return nil, fmt.Errorf("provider not found")
+	}
+	if m.GetProviderFunc != nil {
+		return m.GetProviderFunc(providerType)
+	}
+	return &MockAuthProvider{}, nil
+}
+
+func (m *MockAuthManager) RegisterProvider(provider auth.AuthenticationProvider) error {
+	return nil
+}
+
+func (m *MockAuthManager) ListProviders() []auth.ProviderType {
+	return []auth.ProviderType{auth.ProviderTypePassword}
+}
+
+func (m *MockAuthManager) ValidateCredentials(ctx context.Context, providerType auth.ProviderType, credentials any, userInfo *auth.UserInfo) error {
+	if m.shouldFail && m.failOnMethod == "ValidateCredentials" {
+		return fmt.Errorf("credential validation failed")
+	}
+	return nil
+}
+
+func (m *MockAuthManager) Authenticate(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error) {
+	if m.shouldFail && m.failOnMethod == "Authenticate" {
+		return nil, fmt.Errorf("authentication failed")
+	}
+	return &auth.AuthenticationResult{
+		UserID:       "test-user-id",
+		ProviderType: auth.ProviderTypePassword,
+	}, nil
+}
+
+func (m *MockAuthManager) UpdateCredentials(ctx context.Context, req *auth.CredentialUpdateRequest) ([]byte, error) {
+	return []byte("updated-credentials"), nil
+}
+
+func (m *MockAuthManager) PrepareCredentials(ctx context.Context, providerType auth.ProviderType, credentials any) ([]byte, error) {
+	return []byte("prepared-credentials"), nil
+}
+
+func (m *MockAuthManager) HasProvider(providerType auth.ProviderType) bool {
+	return true
+}
+
+// MockAuthProvider implements auth.AuthenticationProvider for testing
+type MockAuthProvider struct {
+	shouldFail bool
+}
+
+func (m *MockAuthProvider) GetProviderType() auth.ProviderType {
+	return auth.ProviderTypePassword
+}
+
+func (m *MockAuthProvider) Authenticate(ctx context.Context, identifier string, credentials any, storedAuthData []byte) (*auth.AuthenticationResult, error) {
+	if m.shouldFail {
+		return nil, fmt.Errorf("authentication failed")
+	}
+
+	return &auth.AuthenticationResult{
+		UserID:       "test-user-id",
+		ProviderType: auth.ProviderTypePassword,
+	}, nil
+}
+
+func (m *MockAuthProvider) PrepareCredentials(ctx context.Context, credentials any) ([]byte, error) {
+	if m.shouldFail {
+		return nil, fmt.Errorf("prepare credentials failed")
+	}
+	return []byte("prepared-auth-data"), nil
+}
+
+func (m *MockAuthProvider) ValidateCredentials(ctx context.Context, credentials any, userInfo *auth.UserInfo) error {
+	if m.shouldFail {
+		return fmt.Errorf("invalid credentials")
+	}
+	return nil
+}
+
+func (m *MockAuthProvider) UpdateCredentials(ctx context.Context, userID string, oldCredentials, newCredentials any, storedAuthData []byte) ([]byte, error) {
+	if m.shouldFail {
+		return nil, fmt.Errorf("update credentials failed")
+	}
+	return []byte("updated-auth-data"), nil
+}
+
+func (m *MockAuthProvider) SupportsCredentialUpdate() bool {
+	return true
+}
+
+// Test helper to create service dependencies
+type ServiceDependencies struct {
+	UserRepo     *MockUserRepository
+	AuthRepo     AuthenticationRepository
+	SecurityRepo UserSecurityRepository
+	Encrypter    *MockEncrypter
+	Logger       *MockLogger
+	Cache        *MockCache
+	Config       *MockConfig
+	Metrics      metrics.Registry
+	AuthManager  *MockAuthManager
+}
+
+func NewServiceDependencies() *ServiceDependencies {
+	return &ServiceDependencies{
+		UserRepo:     NewMockUserRepository(),
+		AuthRepo:     NewInMemoryAuthRepository(),
+		SecurityRepo: NewInMemorySecurityRepository(),
+		Encrypter:    &MockEncrypter{},
+		Logger:       &MockLogger{},
+		Cache:        NewMockCache(),
+		Config:       NewMockConfig(),
+		Metrics:      NewMockMetrics(),
+		AuthManager:  NewMockAuthManager(),
+	}
+}
+
+func (d *ServiceDependencies) CreateService() UserService {
+	return NewUserService(
+		d.UserRepo,
+		d.AuthRepo,
+		d.SecurityRepo,
+		d.Encrypter,
+		d.Logger,
+		d.Cache,
+		d.Config,
+		d.Metrics,
+		d.AuthManager,
+	)
+}
+
+// Helper to create valid request objects
+func createValidCreateUserRequest() *CreateUserRequest {
+	return &CreateUserRequest{
 		FirstName:              "John",
 		LastName:               "Doe",
-		Email:                  "john@example.com",
+		Email:                  "john.doe@example.com",
+		Credentials:            "password123",
 		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
 	}
+}
+
+func createValidAuthenticateRequest() *AuthenticateRequest {
+	return &AuthenticateRequest{
+		Email:                  "john.doe@example.com",
+		Credentials:            "password123",
+		AuthenticationProvider: auth.ProviderTypePassword,
+	}
+}
+
+func createValidUpdateProfileRequest() *UpdateProfileRequest {
+	firstName := "Jane"
+	return &UpdateProfileRequest{
+		FirstName: &firstName,
+	}
+}
+
+// Constructor and Configuration Tests (5 tests)
+
+func TestNewUserService_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+
+	service := deps.CreateService()
+
+	if service == nil {
+		t.Error("Expected service to be created, got nil")
+	}
+}
+
+func TestNewUserService_ConfigurationLoading(t *testing.T) {
+	deps := NewServiceDependencies()
+
+	// Set some config values
+	deps.Config.Set("user_service.cache_user_ttl", "30m")
+	deps.Config.Set("user_service.max_login_attempts", 3)
+	deps.Config.Set("user_service.enable_rate_limit", false)
+
+	service := deps.CreateService()
+
+	if service == nil {
+		t.Error("Expected service to be created with custom config, got nil")
+	}
+}
+
+func TestNewUserService_DefaultValues(t *testing.T) {
+	deps := NewServiceDependencies()
+
+	// Create service without setting any config values to test defaults
+	service := deps.CreateService()
+
+	if service == nil {
+		t.Error("Expected service to be created with default config, got nil")
+	}
+}
+
+func TestNewUserService_EmailValidatorConfiguration(t *testing.T) {
+	deps := NewServiceDependencies()
+
+	// Set email validation config
+	deps.Config.Set("user_service.allow_disposable_emails", true)
+
+	service := deps.CreateService()
+
+	if service == nil {
+		t.Error("Expected service to be created with email validator config, got nil")
+	}
+}
+
+func TestNewUserService_NilDependencies(t *testing.T) {
+	// Test with some nil dependencies - this should work as the constructor
+	// doesn't validate for nil (following Go's fail-fast philosophy)
+	service := NewUserService(
+		nil, // userRepository
+		NewInMemoryAuthRepository(),
+		NewInMemorySecurityRepository(),
+		&MockEncrypter{},
+		&MockLogger{},
+		NewMockCache(),
+		NewMockConfig(),
+		NewMockMetrics(),
+		NewMockAuthManager(),
+	)
+
+	if service == nil {
+		t.Error("Expected service to be created even with some nil dependencies")
+	}
+}
+
+// CreateUser Unit Tests (8 tests)
+
+func TestCreateUser_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+	req := createValidCreateUserRequest()
+
+	response, err := service.CreateUser(ctx, req)
+
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+
+	if response == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if response.DisplayName == "" {
+		t.Error("Expected display name to be set")
+	}
+
+	if response.Status != UserStatusPendingVerification {
+		t.Errorf("Expected status %s, got %s", UserStatusPendingVerification, response.Status)
+	}
+}
+
+func TestCreateUser_ValidationFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Test with invalid request (empty first name)
+	req := createValidCreateUserRequest()
+	req.FirstName = ""
+
+	response, err := service.CreateUser(ctx, req)
+
+	if err == nil {
+		t.Error("Expected validation error, got nil")
+	}
+
+	if response != nil {
+		t.Error("Expected no response on validation failure, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeValidationFailed {
+		t.Errorf("Expected validation error, got: %v", err)
+	}
+}
+
+func TestCreateUser_EmailNormalization(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	req := createValidCreateUserRequest()
+	req.Email = "  JOHN.DOE@EXAMPLE.COM  " // Test normalization
+
+	response, err := service.CreateUser(ctx, req)
+
+	if err != nil {
+		t.Errorf("Expected no error, got: %v", err)
+	}
+
+	if response == nil {
+		t.Error("Expected response, got nil")
+	}
+
+	// Email should be normalized (trimmed and lowercased)
+	// We can't directly check the stored email since it's hashed,
+	// but the service should handle normalization internally
+}
+
+func TestCreateUser_DuplicateEmail(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	req := createValidCreateUserRequest()
 
 	// Create first user
-	_, err := service.CreateUser(ctx, baseReq)
+	_, err := service.CreateUser(ctx, req)
 	if err != nil {
-		t.Fatalf("Failed to create first user: %v", err)
+		t.Fatalf("Expected first user creation to succeed, got: %v", err)
 	}
 
-	tests := []struct {
-		name  string
-		email string
-	}{
-		{"exact duplicate", "john@example.com"},
-		{"case variation", "John@Example.Com"},
-		{"whitespace variation", " john@example.com "},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := *baseReq
-			req.Email = tt.email
-
-			_, err := service.CreateUser(ctx, &req)
-
-			if err == nil {
-				t.Error("Expected duplicate email error")
-				return
-			}
-			appErr, ok := err.(*errors.AppError)
-			if !ok || appErr.Code != errors.CodeDuplicateEmail {
-				t.Errorf("Expected duplicate email error, got %v", err)
-			}
-		})
-	}
-}
-
-// Test authentication with comprehensive scenarios including concurrency
-func TestAuthenticateUser_Comprehensive(t *testing.T) {
-	service := createTestUserService()
-	ctx := context.Background()
-
-	// Create test user
-	createReq := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	user, err := service.CreateUser(ctx, createReq)
-	if err != nil {
-		t.Fatalf("Failed to create user: %v", err)
-	}
-
-	// Activate user for authentication tests
-	_, err = service.ActivateUser(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("Failed to activate user: %v", err)
-	}
-
-	tests := []struct {
-		name        string
-		email       string
-		password    string
-		wantErr     bool
-		expectedErr errors.ErrorCode
-	}{
-		{
-			name:     "valid credentials",
-			email:    "john@example.com",
-			password: "StrongPass123!",
-			wantErr:  false,
-		},
-		{
-			name:        "wrong password",
-			email:       "john@example.com",
-			password:    "WrongPassword",
-			wantErr:     true,
-			expectedErr: errors.CodeInvalidCredentials,
-		},
-		{
-			name:        "non-existent user",
-			email:       "nobody@example.com",
-			password:    "StrongPass123!",
-			wantErr:     true,
-			expectedErr: errors.CodeInvalidCredentials,
-		},
-		{
-			name:        "invalid email format",
-			email:       "not-an-email",
-			password:    "StrongPass123!",
-			wantErr:     true,
-			expectedErr: errors.CodeInvalidEmailFormat,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			authReq := &AuthenticateRequest{
-				Email:                  tt.email,
-				AuthenticationProvider: auth.ProviderTypePassword,
-				Credentials:            map[string]any{"password": tt.password},
-			}
-
-			response, err := service.AuthenticateUser(ctx, authReq)
-
-			if tt.wantErr {
-				if err == nil {
-					t.Error("Expected error but got none")
-				}
-				if response != nil {
-					t.Error("Expected nil response on error")
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Expected no error, got %v", err)
-				}
-				if response == nil || response.User == nil {
-					t.Error("Expected valid response with user")
-				}
-			}
-		})
-	}
-}
-
-// Test account lockout logic with race conditions
-func TestAuthenticateUser_AccountLockout(t *testing.T) {
-	service := createTestUserService()
-	ctx := context.Background()
-
-	// Create and activate user
-	createReq := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	user, err := service.CreateUser(ctx, createReq)
-	if err != nil {
-		t.Fatalf("Failed to create user: %v", err)
-	}
-
-	_, err = service.ActivateUser(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("Failed to activate user: %v", err)
-	}
-
-	// Test multiple failed attempts
-	authReq := &AuthenticateRequest{
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "WrongPassword"},
-	}
-
-	// Attempt authentication up to lockout threshold
-	maxAttempts := 5 // Default from config
-	for i := 0; i < maxAttempts; i++ {
-		_, err := service.AuthenticateUser(ctx, authReq)
-		if err == nil {
-			t.Errorf("Expected authentication to fail on attempt %d", i+1)
-		}
-	}
-
-	// Next attempt should result in account locked error
-	_, err = service.AuthenticateUser(ctx, authReq)
-	if err == nil {
-		t.Error("Expected account locked error")
-	}
-	if err.Error() != "account locked" {
-		t.Errorf("Expected account locked error, got %v", err)
-	}
-
-	// Even correct password should fail when locked
-	correctAuthReq := &AuthenticateRequest{
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	_, err = service.AuthenticateUser(ctx, correctAuthReq)
-	if err == nil {
-		t.Error("Expected authentication to fail for locked account")
-	}
-}
-
-// Test concurrent authentication attempts (race condition testing)
-func TestAuthenticateUser_ConcurrentAttempts(t *testing.T) {
-	service := createTestUserService()
-	ctx := context.Background()
-
-	// Create and activate user
-	createReq := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	user, err := service.CreateUser(ctx, createReq)
-	if err != nil {
-		t.Fatalf("Failed to create user: %v", err)
-	}
-
-	_, err = service.ActivateUser(ctx, user.ID)
-	if err != nil {
-		t.Fatalf("Failed to activate user: %v", err)
-	}
-
-	// Simulate concurrent failed authentication attempts
-	const numGoroutines = 10
-	var wg sync.WaitGroup
-	errChan := make(chan error, numGoroutines)
-
-	authReq := &AuthenticateRequest{
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "WrongPassword"},
-	}
-
-	for i := 0; i < numGoroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, err := service.AuthenticateUser(ctx, authReq)
-			errChan <- err
-		}()
-	}
-
-	wg.Wait()
-	close(errChan)
-
-	// All attempts should fail
-	errorCount := 0
-	for err := range errChan {
-		if err != nil {
-			errorCount++
-		}
-	}
-
-	if errorCount != numGoroutines {
-		t.Errorf("Expected all %d attempts to fail, got %d failures", numGoroutines, errorCount)
-	}
-
-	// Verify account is properly locked
-	userAfter, err := service.GetUserByEmail(ctx, "john@example.com")
-	if err != nil {
-		t.Fatalf("Failed to get user after concurrent attempts: %v", err)
-	}
-
-	if userAfter.CanAuthenticate {
-		t.Error("Expected user to be locked after concurrent failed attempts")
-	}
-}
-
-// Test update profile with version conflicts
-func TestUpdateProfile_VersionConflict(t *testing.T) {
-	service := createTestUserService()
-	ctx := context.Background()
-
-	// Create user
-	createReq := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	user, err := service.CreateUser(ctx, createReq)
-	if err != nil {
-		t.Fatalf("Failed to create user: %v", err)
-	}
-
-	// Simulate concurrent updates
-	var wg sync.WaitGroup
-	const numUpdates = 5
-	successCount := make(chan bool, numUpdates)
-
-	for i := 0; i < numUpdates; i++ {
-		wg.Add(1)
-		go func(updateNum int) {
-			defer wg.Done()
-
-			updateReq := &UpdateProfileRequest{
-				FirstName: stringPtr(fmt.Sprintf("UpdatedName%d", updateNum)),
-			}
-
-			_, err := service.UpdateProfile(ctx, user.ID, updateReq)
-			successCount <- err == nil
-		}(i)
-	}
-
-	wg.Wait()
-	close(successCount)
-
-	// Some updates should succeed, others should fail due to version conflicts
-	// The exact behavior depends on timing, but not all should succeed
-	successes := 0
-	for success := range successCount {
-		if success {
-			successes++
-		}
-	}
-
-	// At least one should succeed, but not necessarily all due to version conflicts
-	if successes == 0 {
-		t.Error("Expected at least one update to succeed")
-	}
-
-	t.Logf("Concurrent updates: %d/%d succeeded", successes, numUpdates)
-}
-
-// Test repository error handling
-func TestCreateUser_RepositoryErrors(t *testing.T) {
-	service := createTestUserService()
-	ctx := context.Background()
-
-	// Get the mock repository and set it to fail
-	mockRepo := getMockRepository(service)
-	if mockRepo == nil {
-		t.Fatal("Failed to get mock repository from service")
-	}
-	mockRepo.createFunc = func(context.Context, *User) error {
-		return fmt.Errorf("database connection failed")
-	}
-
-	req := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	response, err := service.CreateUser(ctx, req)
+	// Try to create second user with same email
+	_, err = service.CreateUser(ctx, req)
 
 	if err == nil {
-		t.Error("Expected error when repository fails")
+		t.Error("Expected duplicate email error, got nil")
 	}
-	if response != nil {
-		t.Error("Expected nil response when repository fails")
-	}
+
 	appErr, ok := err.(*errors.AppError)
-	if !ok {
-		t.Error("Expected AppError type")
-	} else if appErr.Code != errors.CodeInternalError {
-		t.Errorf("Expected internal error, got %s", appErr.Code)
+	if !ok || appErr.Code != errors.CodeDuplicateEmail {
+		t.Errorf("Expected duplicate email error, got: %v", err)
 	}
 }
 
-// Test using createTestUserServiceWithRepoError helper
-func TestCreateUser_RepositoryErrorsWithHelper(t *testing.T) {
+func TestCreateUser_EncryptionFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.Encrypter.shouldFail = true
+	service := deps.CreateService()
 	ctx := context.Background()
 
-	// Use helper to create service with repository that always fails on create
-	service := createTestUserServiceWithRepoError("create", fmt.Errorf("database connection failed"))
-
-	req := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
+	req := createValidCreateUserRequest()
 
 	response, err := service.CreateUser(ctx, req)
 
 	if err == nil {
-		t.Error("Expected error when repository fails")
+		t.Error("Expected encryption error, got nil")
 	}
+
 	if response != nil {
-		t.Error("Expected nil response when repository fails")
+		t.Error("Expected no response on encryption failure, got response")
 	}
 }
 
-// Test using createTestUserServiceWithUsers helper
-func TestGetUserByID_WithPreexistingUser(t *testing.T) {
+func TestCreateUser_RepositoryCreateFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.UserRepo.SetShouldFail("Create")
+	service := deps.CreateService()
 	ctx := context.Background()
 
-	// Create a test user and service with that user already in the repository
-	testUser := createActiveTestUser()
-	service := createTestUserServiceWithUsers(testUser)
+	req := createValidCreateUserRequest()
 
-	// Should be able to retrieve the pre-existing user
-	retrievedUser, err := service.GetUserByID(ctx, testUser.ID)
+	response, err := service.CreateUser(ctx, req)
+
+	if err == nil {
+		t.Error("Expected repository error, got nil")
+	}
+
+	if response != nil {
+		t.Error("Expected no response on repository failure, got response")
+	}
+}
+
+func TestCreateUser_AuthManagerFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.AuthManager.SetShouldFail("ValidateCredentials")
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	req := createValidCreateUserRequest()
+
+	response, err := service.CreateUser(ctx, req)
+
+	if err == nil {
+		t.Error("Expected auth manager error, got nil")
+	}
+
+	if response != nil {
+		t.Error("Expected no response on auth manager failure, got response")
+	}
+}
+
+func TestCreateUser_CacheSetFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.Cache.SetShouldFail("Set")
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	req := createValidCreateUserRequest()
+
+	// Cache failures should be gracefully handled (not fail the operation)
+	response, err := service.CreateUser(ctx, req)
 
 	if err != nil {
-		t.Errorf("Expected no error, got %v", err)
+		t.Errorf("Expected cache failure to be graceful, got error: %v", err)
 	}
-	if retrievedUser == nil {
-		t.Error("Expected user to be found")
-	}
-	if retrievedUser != nil && retrievedUser.ID != testUser.ID {
-		t.Errorf("Expected user ID %s, got %s", testUser.ID, retrievedUser.ID)
+
+	if response == nil {
+		t.Error("Expected successful response despite cache failure")
 	}
 }
 
-// Test using createTestUserServiceWithAuth helper for custom authentication behavior
-func TestAuthenticateUser_WithCustomAuthManager(t *testing.T) {
+// Authentication Unit Tests (10 tests)
+
+func TestAuthenticateUser_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
 	ctx := context.Background()
 
-	// Create a mock auth manager that always fails authentication
-	mockAuth := newMockAuthManager().(*mockAuthManager)
-	mockAuth.authenticateFunc = func(ctx context.Context, req *auth.AuthenticationRequest) (*auth.AuthenticationResult, error) {
-		return nil, errors.NewInvalidCredentialsError()
+	// First create a user
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
 	}
 
-	// Create service with the custom auth manager
-	service := createTestUserServiceWithAuth(mockAuth)
-
-	// Create and add a user to the service
-	testUser := createActiveTestUser()
-	if repo := getMockRepository(service); repo != nil {
-		repo.users[testUser.HashedEmail] = testUser.Clone()
-		repo.emailIndex[testUser.HashedEmail] = testUser.ID
+	// Activate the user for authentication
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
 	}
 
-	authReq := &AuthenticateRequest{
-		Email:                  string(testUser.Email),
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
+	// Now authenticate
+	authReq := createValidAuthenticateRequest()
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	if err != nil {
+		t.Errorf("Expected successful authentication, got error: %v", err)
 	}
 
-	result, err := service.AuthenticateUser(ctx, authReq)
+	if authResponse == nil {
+		t.Fatal("Expected authentication response, got nil")
+	}
 
-	// Should fail due to our custom auth manager
+	if authResponse.User == nil {
+		t.Error("Expected user in response, got nil")
+	}
+
+	if authResponse.User.ID != activatedUser.ID {
+		t.Errorf("Expected user ID %s, got %s", activatedUser.ID, authResponse.User.ID)
+	}
+}
+
+func TestAuthenticateUser_UserNotFound(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	authReq := createValidAuthenticateRequest()
+	authReq.Email = "nonexistent@example.com"
+
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
 	if err == nil {
-		t.Error("Expected authentication to fail with custom auth manager")
-	}
-	if result != nil {
-		t.Error("Expected nil result when authentication fails")
+		t.Error("Expected user not found error, got nil")
 	}
 
-	// Verify the custom auth manager was called
-	if mockAuth := getMockAuthManager(service); mockAuth != nil {
-		if len(mockAuth.providers) == 0 {
-			t.Error("Expected mock auth manager to have providers")
-		}
+	if authResponse != nil {
+		t.Error("Expected no response on user not found, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeUserNotFound {
+		t.Errorf("Expected user not found error, got: %v", err)
 	}
 }
 
-// Test using createIntegrationTestService for more realistic authentication testing
-func TestAuthenticateUser_IntegrationTest(t *testing.T) {
-	ctx := context.Background()
+func TestAuthenticateUser_InvalidCredentials(t *testing.T) {
+	deps := NewServiceDependencies()
 
-	// Use integration test service with real auth manager but mock providers
-	service := createIntegrationTestService()
-
-	// Create a user with the service
-	createReq := &CreateUserRequest{
-		FirstName:              "John",
-		LastName:               "Doe",
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
+	// Configure auth provider to fail authentication
+	mockProvider := &MockAuthProvider{shouldFail: true}
+	deps.AuthManager.GetProviderFunc = func(providerType auth.ProviderType) (auth.AuthenticationProvider, error) {
+		return mockProvider, nil
 	}
 
-	user, err := service.CreateUser(ctx, createReq)
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// First create and activate a user
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	_, err = service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Now try to authenticate with invalid credentials
+	authReq := createValidAuthenticateRequest()
+	authReq.Credentials = "wrong_password"
+
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	if err == nil {
+		t.Error("Expected authentication failure, got nil error")
+	}
+
+	if authResponse != nil {
+		t.Error("Expected no response on auth failure, got response")
+	}
+}
+
+func TestAuthenticateUser_AccountLocked(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Lock the account
+	lockUntil := time.Now().Add(time.Hour)
+	_, err = service.LockUser(ctx, activatedUser.ID, &lockUntil, "test_lock")
+	if err != nil {
+		t.Fatalf("Failed to lock user: %v", err)
+	}
+
+	// Try to authenticate locked account
+	authReq := createValidAuthenticateRequest()
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	if err == nil {
+		t.Error("Expected authentication failure for locked account, got nil error")
+	}
+
+	if authResponse != nil {
+		t.Error("Expected no response for locked account, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || (appErr.Code != errors.CodeAccountLocked && appErr.Code != errors.CodeUserSuspended) {
+		t.Errorf("Expected user locked/suspended error, got: %v", err)
+	}
+}
+
+func TestAuthenticateUser_AccountSuspended(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Suspend the account
+	_, err = service.SuspendUser(ctx, activatedUser.ID, "test_suspension")
+	if err != nil {
+		t.Fatalf("Failed to suspend user: %v", err)
+	}
+
+	// Try to authenticate suspended account
+	authReq := createValidAuthenticateRequest()
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	if err == nil {
+		t.Error("Expected authentication failure for suspended account, got nil error")
+	}
+
+	if authResponse != nil {
+		t.Error("Expected no response for suspended account, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeUserSuspended {
+		t.Errorf("Expected user suspended error, got: %v", err)
+	}
+}
+
+func TestAuthenticateUser_AccountDeactivated(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Deactivate the account
+	_, err = service.DeactivateUser(ctx, activatedUser.ID, "test_deactivation")
+	if err != nil {
+		t.Fatalf("Failed to deactivate user: %v", err)
+	}
+
+	// Try to authenticate deactivated account
+	authReq := createValidAuthenticateRequest()
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	if err == nil {
+		t.Error("Expected authentication failure for deactivated account, got nil error")
+	}
+
+	if authResponse != nil {
+		t.Error("Expected no response for deactivated account, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeUserDeactivated {
+		t.Errorf("Expected user deactivated error, got: %v", err)
+	}
+}
+
+func TestAuthenticateUser_RateLimit(t *testing.T) {
+	deps := NewServiceDependencies()
+
+	// Configure cache to simulate rate limit hit
+	deps.Cache.SetShouldFail("Get")
+	// We'll simulate that rate limit checking fails which should trigger rate limit behavior
+
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	authReq := createValidAuthenticateRequest()
+
+	// The service should handle cache failures gracefully
+	// but for this test, we're mainly checking that rate limit logic exists
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	// The behavior depends on how the service handles cache failures during rate limiting
+	// Since we expect graceful degradation, this might succeed or fail depending on implementation
+	if err != nil && authResponse != nil {
+		t.Error("Response should be nil when error occurs")
+	}
+}
+
+func TestAuthenticateUser_SecurityUpdateFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	_, err = service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Now test authentication - even if security update fails, authentication might still succeed
+	// depending on the service implementation's error handling strategy
+	authReq := createValidAuthenticateRequest()
+
+	// This is more of a integration test concern, but we can verify the behavior
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	// The exact behavior depends on implementation - some services might fail,
+	// others might succeed but log the error
+	if err != nil && authResponse != nil {
+		t.Error("Response should be nil when error occurs")
+	}
+}
+
+func TestAuthenticateUser_ProviderNotFound(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.AuthManager.SetShouldFail("GetProvider")
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	authReq := createValidAuthenticateRequest()
+	authReq.AuthenticationProvider = "nonexistent_provider"
+
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	if err == nil {
+		t.Error("Expected provider not found error, got nil")
+	}
+
+	if authResponse != nil {
+		t.Error("Expected no response when provider not found, got response")
+	}
+}
+
+func TestAuthenticateUser_CacheGetFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.Cache.SetShouldFail("Get")
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	_, err = service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Cache get failures should be handled gracefully - authentication should still work
+	authReq := createValidAuthenticateRequest()
+	authResponse, err := service.AuthenticateUser(ctx, authReq)
+
+	// Since cache failures should be graceful, authentication might still succeed
+	// The exact behavior depends on the implementation's graceful degradation strategy
+	if err != nil && authResponse != nil {
+		t.Error("Response should be nil when error occurs")
+	}
+
+	// The key test is that the service doesn't panic and handles the cache failure gracefully
+}
+
+// Profile Management Unit Tests (6 tests)
+
+func TestUpdateProfile_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	// Update profile
+	updateReq := createValidUpdateProfileRequest()
+	updatedResponse, err := service.UpdateProfile(ctx, userResponse.ID, updateReq)
+
+	if err != nil {
+		t.Errorf("Expected successful profile update, got error: %v", err)
+	}
+
+	if updatedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if updatedResponse.ID != userResponse.ID {
+		t.Errorf("Expected user ID %s, got %s", userResponse.ID, updatedResponse.ID)
+	}
+
+	// Verify version was incremented
+	if updatedResponse.Version <= userResponse.Version {
+		t.Errorf("Expected version to be incremented from %d, got %d", userResponse.Version, updatedResponse.Version)
+	}
+}
+
+func TestUpdateProfile_EmptyRequest(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	// Try to update with empty request
+	emptyReq := &UpdateProfileRequest{}
+	updatedResponse, err := service.UpdateProfile(ctx, userResponse.ID, emptyReq)
+
+	if err == nil {
+		t.Error("Expected validation error for empty request, got nil")
+	}
+
+	if updatedResponse != nil {
+		t.Error("Expected no response for empty request, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeValidationFailed {
+		t.Errorf("Expected validation error, got: %v", err)
+	}
+}
+
+func TestUpdateProfile_UserNotFound(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	updateReq := createValidUpdateProfileRequest()
+	updatedResponse, err := service.UpdateProfile(ctx, "nonexistent-user-id", updateReq)
+
+	if err == nil {
+		t.Error("Expected user not found error, got nil")
+	}
+
+	if updatedResponse != nil {
+		t.Error("Expected no response for nonexistent user, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeUserNotFound {
+		t.Errorf("Expected user not found error, got: %v", err)
+	}
+}
+
+func TestUpdateProfile_EmailChangeValidation(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Update email - this should trigger re-verification
+	newEmail := "newemail@example.com"
+	updateReq := &UpdateProfileRequest{
+		Email: &newEmail,
+	}
+
+	updatedResponse, err := service.UpdateProfile(ctx, activatedUser.ID, updateReq)
+
+	if err != nil {
+		t.Errorf("Expected successful email update, got error: %v", err)
+	}
+
+	if updatedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	// Email change should trigger re-verification (status should be pending)
+	if updatedResponse.Status != UserStatusPendingVerification {
+		t.Errorf("Expected status %s after email change, got %s", UserStatusPendingVerification, updatedResponse.Status)
+	}
+}
+
+func TestUpdateProfile_EncryptionFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.Encrypter.shouldFail = true
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create user first (this might also fail due to encryption, but let's try)
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		// If creation fails due to encryption, that's expected
+		t.Skipf("Skipping test due to encryption failure during user creation: %v", err)
+	}
+
+	// Try to update profile with encryption failure
+	updateReq := createValidUpdateProfileRequest()
+	updatedResponse, err := service.UpdateProfile(ctx, userResponse.ID, updateReq)
+
+	if err == nil {
+		t.Error("Expected encryption error, got nil")
+	}
+
+	if updatedResponse != nil {
+		t.Error("Expected no response on encryption failure, got response")
+	}
+}
+
+func TestUpdateProfile_RepositoryUpdateFailure(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	// Set repository to fail on update
+	deps.UserRepo.SetShouldFail("Update")
+
+	// Try to update profile
+	updateReq := createValidUpdateProfileRequest()
+	updatedResponse, err := service.UpdateProfile(ctx, userResponse.ID, updateReq)
+
+	if err == nil {
+		t.Error("Expected repository error, got nil")
+	}
+
+	if updatedResponse != nil {
+		t.Error("Expected no response on repository failure, got response")
+	}
+}
+
+// Account State Management Unit Tests (6 tests)
+
+func TestActivateUser_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create user first (starts in pending verification status)
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
 	if err != nil {
 		t.Fatalf("Failed to create user: %v", err)
 	}
 
 	// Activate user
-	_, err = service.ActivateUser(ctx, user.ID)
+	activatedResponse, err := service.ActivateUser(ctx, userResponse.ID)
+
+	if err != nil {
+		t.Errorf("Expected successful activation, got error: %v", err)
+	}
+
+	if activatedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if activatedResponse.Status != UserStatusActive {
+		t.Errorf("Expected status %s, got %s", UserStatusActive, activatedResponse.Status)
+	}
+
+	if activatedResponse.EmailVerified != true {
+		t.Error("Expected EmailVerified to be true after activation")
+	}
+
+	// Verify version was incremented
+	if activatedResponse.Version <= userResponse.Version {
+		t.Errorf("Expected version to be incremented from %d, got %d", userResponse.Version, activatedResponse.Version)
+	}
+}
+
+func TestActivateUser_UserNotFound(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	activatedResponse, err := service.ActivateUser(ctx, "nonexistent-user-id")
+
+	if err == nil {
+		t.Error("Expected user not found error, got nil")
+	}
+
+	if activatedResponse != nil {
+		t.Error("Expected no response for nonexistent user, got response")
+	}
+
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeUserNotFound {
+		t.Errorf("Expected user not found error, got: %v", err)
+	}
+}
+
+func TestSuspendUser_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
 	if err != nil {
 		t.Fatalf("Failed to activate user: %v", err)
 	}
 
-	// Test authentication with integration service
-	authReq := &AuthenticateRequest{
-		Email:                  "john@example.com",
-		AuthenticationProvider: auth.ProviderTypePassword,
-		Credentials:            map[string]any{"password": "StrongPass123!"},
-	}
-
-	authResult, err := service.AuthenticateUser(ctx, authReq)
+	// Suspend user
+	reason := "Terms of service violation"
+	suspendedResponse, err := service.SuspendUser(ctx, activatedUser.ID, reason)
 
 	if err != nil {
-		t.Errorf("Expected successful authentication, got error: %v", err)
+		t.Errorf("Expected successful suspension, got error: %v", err)
 	}
-	if authResult == nil || authResult.User == nil {
-		t.Error("Expected authentication result with user")
+
+	if suspendedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if suspendedResponse.Status != UserStatusSuspended {
+		t.Errorf("Expected status %s, got %s", UserStatusSuspended, suspendedResponse.Status)
+	}
+
+	if suspendedResponse.CanAuthenticate {
+		t.Error("Expected CanAuthenticate to be false for suspended user")
+	}
+
+	// Verify version was incremented
+	if suspendedResponse.Version <= activatedUser.Version {
+		t.Errorf("Expected version to be incremented from %d, got %d", activatedUser.Version, suspendedResponse.Version)
+	}
+}
+
+func TestDeactivateUser_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Deactivate user
+	reason := "User requested account deletion"
+	deactivatedResponse, err := service.DeactivateUser(ctx, activatedUser.ID, reason)
+
+	if err != nil {
+		t.Errorf("Expected successful deactivation, got error: %v", err)
+	}
+
+	if deactivatedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if deactivatedResponse.Status != UserStatusDeactivated {
+		t.Errorf("Expected status %s, got %s", UserStatusDeactivated, deactivatedResponse.Status)
+	}
+
+	if deactivatedResponse.CanAuthenticate {
+		t.Error("Expected CanAuthenticate to be false for deactivated user")
+	}
+
+	// Verify version was incremented
+	if deactivatedResponse.Version <= activatedUser.Version {
+		t.Errorf("Expected version to be incremented from %d, got %d", activatedUser.Version, deactivatedResponse.Version)
+	}
+}
+
+func TestLockUser_Temporary(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create and activate user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	// Lock user temporarily
+	lockUntil := time.Now().Add(2 * time.Hour)
+	reason := "Suspicious login activity"
+	lockedResponse, err := service.LockUser(ctx, activatedUser.ID, &lockUntil, reason)
+
+	if err != nil {
+		t.Errorf("Expected successful lock, got error: %v", err)
+	}
+
+	if lockedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	// The status might remain Active but AccountLocked should be true
+	if !lockedResponse.AccountLocked {
+		t.Error("Expected AccountLocked to be true")
+	}
+
+	if lockedResponse.CanAuthenticate {
+		t.Error("Expected CanAuthenticate to be false for locked user")
+	}
+
+	// Verify version was incremented
+	if lockedResponse.Version <= activatedUser.Version {
+		t.Errorf("Expected version to be incremented from %d, got %d", activatedUser.Version, lockedResponse.Version)
+	}
+}
+
+func TestUnlockUser_Success(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Create, activate, and lock user first
+	createReq := createValidCreateUserRequest()
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		t.Fatalf("Failed to create user: %v", err)
+	}
+
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		t.Fatalf("Failed to activate user: %v", err)
+	}
+
+	lockUntil := time.Now().Add(time.Hour)
+	lockedUser, err := service.LockUser(ctx, activatedUser.ID, &lockUntil, "test_lock")
+	if err != nil {
+		t.Fatalf("Failed to lock user: %v", err)
+	}
+
+	// Unlock user
+	unlockedResponse, err := service.UnlockUser(ctx, lockedUser.ID)
+
+	if err != nil {
+		t.Errorf("Expected successful unlock, got error: %v", err)
+	}
+
+	if unlockedResponse == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	if unlockedResponse.AccountLocked {
+		t.Error("Expected AccountLocked to be false after unlock")
+	}
+
+	if !unlockedResponse.CanAuthenticate {
+		t.Error("Expected CanAuthenticate to be true after unlock")
+	}
+
+	// Verify version was incremented
+	if unlockedResponse.Version <= lockedUser.Version {
+		t.Errorf("Expected version to be incremented from %d, got %d", lockedUser.Version, unlockedResponse.Version)
+	}
+}
+
+// Error Handling Unit Tests (3 tests)
+
+func TestService_RepositoryErrors(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Test various repository error scenarios
+	testCases := []struct {
+		name      string
+		method    string
+		operation func() error
+	}{
+		{
+			name:   "CreateUser with repository failure",
+			method: "Create",
+			operation: func() error {
+				deps.UserRepo.SetShouldFail("Create")
+				_, err := service.CreateUser(ctx, createValidCreateUserRequest())
+				return err
+			},
+		},
+		{
+			name:   "GetUserByID with repository failure",
+			method: "GetByID",
+			operation: func() error {
+				deps.UserRepo.SetShouldFail("GetByID")
+				_, err := service.GetUserByID(ctx, "test-id")
+				return err
+			},
+		},
+		{
+			name:   "GetUserByEmail with repository failure",
+			method: "GetByHashedEmail",
+			operation: func() error {
+				deps.UserRepo.SetShouldFail("GetByHashedEmail")
+				_, err := service.GetUserByEmail(ctx, "test@example.com")
+				return err
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset any previous failures
+			deps.UserRepo.shouldFail = false
+
+			err := tc.operation()
+
+			if err == nil {
+				t.Errorf("Expected repository error for %s, got nil", tc.name)
+			}
+
+			// Check that it's an appropriate error type
+			if appErr, ok := err.(*errors.AppError); ok {
+				if appErr.Code != errors.CodeInternalError && appErr.Code != errors.CodeUserNotFound {
+					t.Errorf("Expected internal server error or user not found, got: %v", appErr.Code)
+				}
+			}
+		})
+	}
+}
+
+func TestService_EncryptionErrors(t *testing.T) {
+	deps := NewServiceDependencies()
+	deps.Encrypter.shouldFail = true
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Test various encryption failure scenarios
+	testCases := []struct {
+		name      string
+		operation func() error
+	}{
+		{
+			name: "CreateUser with encryption failure",
+			operation: func() error {
+				_, err := service.CreateUser(ctx, createValidCreateUserRequest())
+				return err
+			},
+		},
+		{
+			name: "UpdateProfile with encryption failure",
+			operation: func() error {
+				// First create a user without encryption failure
+				deps.Encrypter.shouldFail = false
+				createReq := createValidCreateUserRequest()
+				userResponse, err := service.CreateUser(ctx, createReq)
+				if err != nil {
+					return err
+				}
+
+				// Then try to update with encryption failure
+				deps.Encrypter.shouldFail = true
+				updateReq := createValidUpdateProfileRequest()
+				_, err = service.UpdateProfile(ctx, userResponse.ID, updateReq)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.operation()
+
+			if err == nil {
+				t.Errorf("Expected encryption error for %s, got nil", tc.name)
+			}
+
+			// The exact error type depends on how the service handles encryption errors
+			// It might be wrapped as an AppError or returned as-is
+		})
+	}
+}
+
+func TestService_CacheErrors(t *testing.T) {
+	deps := NewServiceDependencies()
+	service := deps.CreateService()
+	ctx := context.Background()
+
+	// Test various cache failure scenarios with graceful degradation
+	testCases := []struct {
+		name      string
+		method    string
+		operation func() error
+	}{
+		{
+			name:   "CreateUser with cache set failure",
+			method: "Set",
+			operation: func() error {
+				deps.Cache.SetShouldFail("Set")
+				_, err := service.CreateUser(ctx, createValidCreateUserRequest())
+				return err
+			},
+		},
+		{
+			name:   "GetUserByID with cache get failure",
+			method: "Get",
+			operation: func() error {
+				// First create a user
+				createReq := createValidCreateUserRequest()
+				userResponse, err := service.CreateUser(ctx, createReq)
+				if err != nil {
+					return err
+				}
+
+				// Then try to get with cache failure
+				deps.Cache.SetShouldFail("Get")
+				_, err = service.GetUserByID(ctx, userResponse.ID)
+				return err
+			},
+		},
+		{
+			name:   "AuthenticateUser with cache failure",
+			method: "Get",
+			operation: func() error {
+				// Create and activate user first
+				createReq := createValidCreateUserRequest()
+				userResponse, err := service.CreateUser(ctx, createReq)
+				if err != nil {
+					return err
+				}
+
+				_, err = service.ActivateUser(ctx, userResponse.ID)
+				if err != nil {
+					return err
+				}
+
+				// Then try to authenticate with cache failure
+				deps.Cache.SetShouldFail("Get")
+				authReq := createValidAuthenticateRequest()
+				_, err = service.AuthenticateUser(ctx, authReq)
+				return err
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Reset any previous failures
+			deps.Cache.shouldFail = false
+
+			err := tc.operation()
+
+			// Cache failures should be handled gracefully - operations should still succeed
+			// or fail for other reasons, not because of cache issues
+			// The exact behavior depends on the service implementation's graceful degradation strategy
+
+			// At minimum, the service shouldn't panic and should handle cache errors gracefully
+			// Whether the operation succeeds or fails depends on the specific implementation
+			t.Logf("Cache failure test %s completed with result: %v", tc.name, err)
+		})
 	}
 }

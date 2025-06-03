@@ -476,11 +476,14 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 			return nil, errors.NewAppError(errors.CodeInternalError, "Authentication processing failed")
 		}
 
-		// Process failed authentication using business logic with pre-loaded config
-		security.ProcessFailedAttempt(s.serviceConfig.MaxLoginAttempts, s.serviceConfig.LockoutDuration, "")
+		// Clone security state to avoid race conditions
+		securityCopy := security.Clone()
 
-		// Update security state in repository
-		if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+		// Process failed authentication using business logic with pre-loaded config
+		securityCopy.ProcessFailedAttempt(s.serviceConfig.MaxLoginAttempts, s.serviceConfig.LockoutDuration, "")
+
+		// Update security state in repository using the clone
+		if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
 			s.logger.Error("Failed to update security state after failed authentication",
 				logger.Field{Key: "error", Value: err.Error()},
 				logger.Field{Key: "user_id", Value: user.ID})
@@ -489,7 +492,7 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 
 		s.logger.Warn("Authentication failed for user",
 			logger.Field{Key: "user_id", Value: user.ID},
-			logger.Field{Key: "attempts", Value: security.LoginAttempts})
+			logger.Field{Key: "attempts", Value: securityCopy.LoginAttempts})
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.authenticate_user.failed",
 		})
@@ -507,11 +510,14 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		security = NewUserSecurity(user.ID) // Create default if missing
 	}
 
-	// Process successful authentication using business logic
-	security.ProcessSuccessfulLogin("")
+	// Clone security state to avoid race conditions
+	securityCopy := security.Clone()
 
-	// Update security state in repository
-	if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+	// Process successful authentication using business logic
+	securityCopy.ProcessSuccessfulLogin("")
+
+	// Update security state in repository using the clone
+	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
 		s.logger.Error("Failed to update security state after successful authentication",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: user.ID})
@@ -1061,14 +1067,17 @@ func (s *userService) UpdateCredentials(ctx context.Context, userID string, req 
 		return errors.NewAppError(errors.CodeInternalError, "Failed to encrypt new auth data")
 	}
 
+	// Clone credentials to avoid race conditions
+	currentCredentialsCopy := currentCredentials.Clone()
+
 	// Update credentials with new encrypted data
-	if err := currentCredentials.UpdateAuthData(encryptedNewAuthData); err != nil {
+	if err := currentCredentialsCopy.UpdateAuthData(encryptedNewAuthData); err != nil {
 		s.logger.Error("Failed to update credential data", logger.Field{Key: "error", Value: err.Error()})
 		return errors.NewAppError(errors.CodeInternalError, "Failed to update credentials")
 	}
 
-	// Save updated credentials
-	if err := s.authRepository.UpdateCredentials(ctx, currentCredentials); err != nil {
+	// Save updated credentials using the clone
+	if err := s.authRepository.UpdateCredentials(ctx, currentCredentialsCopy); err != nil {
 		s.logger.Error("Failed to save updated credentials",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
@@ -1374,15 +1383,18 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		}
 	}
 
+	// Clone security state to avoid race conditions
+	securityCopy := security.Clone()
+
 	// Lock user account using security business logic
 	if until != nil {
-		security.LockAccount(until, reason)
+		securityCopy.LockAccount(until, reason)
 	} else {
 		// For permanent locks, also update User status
 		if err := userCopy.LockAccountPermanently(); err != nil {
 			return nil, err
 		}
-		security.LockAccount(nil, reason) // Permanent lock in security as well
+		securityCopy.LockAccount(nil, reason) // Permanent lock in security as well
 	}
 
 	// Save both user and security state
@@ -1400,8 +1412,8 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to lock user")
 	}
 
-	// Save security state
-	if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+	// Save security state using the clone
+	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
 		s.logger.Error("Failed to update security state for lock",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
@@ -1474,11 +1486,14 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	// Clone user to avoid race conditions
 	userCopy := user.Clone()
 
+	// Clone security state to avoid race conditions
+	securityCopy := security.Clone()
+
 	// Unlock user account in both User and Security entities
 	userCopy.UnlockAccount()
-	security.UnlockAccount()
+	securityCopy.UnlockAccount()
 
-	// Save both user and security state
+	// Save both user and security state using the clones
 	if err := s.userRepository.Update(ctx, userCopy); err != nil {
 		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
@@ -1493,8 +1508,8 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to unlock user")
 	}
 
-	// Save security state
-	if err := s.securityRepository.UpdateSecurity(ctx, security); err != nil {
+	// Save security state using the clone
+	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
 		s.logger.Error("Failed to update security state for unlock",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
