@@ -20,8 +20,6 @@ const (
 	UserStatusSuspended
 	// UserStatusPendingVerification indicates a user account pending email verification
 	UserStatusPendingVerification
-	// UserStatusLocked indicates a locked user account (due to too many failed login attempts)
-	UserStatusLocked
 	// UserStatusDeactivated indicates a deactivated user account
 	UserStatusDeactivated
 )
@@ -36,8 +34,6 @@ func (s UserStatus) String() string {
 		return "suspended"
 	case UserStatusPendingVerification:
 		return "pending_verification"
-	case UserStatusLocked:
-		return "locked"
 	case UserStatusDeactivated:
 		return "deactivated"
 	default:
@@ -50,7 +46,7 @@ func (s UserStatus) IsValid() bool {
 	return s >= UserStatusActive && s <= UserStatusDeactivated
 }
 
-// CanAuthenticate returns true if the user status allows authentication
+// CanAuthenticate returns true if the UserStatus allows authentication
 func (s UserStatus) CanAuthenticate() bool {
 	return s == UserStatusActive
 }
@@ -124,8 +120,10 @@ func (u *User) IsActive() bool {
 	return u.Status == UserStatusActive
 }
 
-// CanAuthenticate returns true if the user can currently authenticate
-// Note: This only checks the user status, security state should be checked separately
+// CanAuthenticate returns true if the user can currently authenticate based on User status
+// Note: This only checks the user account status (Active/Suspended/etc).
+// Security locks (temporary/permanent) must be checked separately via UserSecurity.IsLocked()
+// The service layer orchestrates both checks for complete authentication validation.
 func (u *User) CanAuthenticate() bool {
 	return u.Status.CanAuthenticate()
 }
@@ -219,32 +217,6 @@ func (u *User) DeactivateAccount(reason string) error {
 	return nil
 }
 
-// LockAccountPermanently locks the account permanently by changing status
-func (u *User) LockAccountPermanently() error {
-	// Business rule: cannot lock deactivated users
-	if u.Status == UserStatusDeactivated {
-		return errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
-	}
-
-	// Already permanently locked - no error, but no change needed
-	if u.Status == UserStatusLocked {
-		return nil
-	}
-
-	u.Status = UserStatusLocked
-	u.updateMetadata()
-	return nil
-}
-
-// UnlockAccount unlocks a permanently locked account
-// Note: For temporary locks, use UserSecurity.UnlockAccount()
-func (u *User) UnlockAccount() {
-	if u.Status == UserStatusLocked {
-		u.Status = UserStatusActive
-		u.updateMetadata()
-	}
-}
-
 // GetDisplayNameWithLogging returns a formatted display name for the user
 func (u *User) GetDisplayName(enc encrypter.Encrypter, log logger.Logger) string {
 	if enc == nil {
@@ -331,6 +303,48 @@ func (u *User) Validate() error {
 	}
 
 	return nil
+}
+
+// HasAuthenticationProvider checks if the user has a specific authentication provider
+// This is a convenience method that checks the PrimaryAuthProvider
+// For comprehensive provider checking, use UserCredentials repository
+func (u *User) HasAuthenticationProvider(providerType auth.ProviderType) bool {
+	return u.PrimaryAuthProvider == providerType
+}
+
+// AddAuthenticationProvider sets the primary authentication provider
+// This method only updates the User entity's primary provider reference
+// Actual credential management should be done through UserCredentials repository
+func (u *User) AddAuthenticationProvider(providerType auth.ProviderType) {
+	if u.PrimaryAuthProvider == "" {
+		u.PrimaryAuthProvider = providerType
+		u.updateMetadata()
+	}
+}
+
+// RemoveAuthenticationProvider clears the primary authentication provider
+// This method only updates the User entity's primary provider reference
+// Actual credential removal should be done through UserCredentials repository
+func (u *User) RemoveAuthenticationProvider(providerType auth.ProviderType) {
+	if u.PrimaryAuthProvider == providerType {
+		u.PrimaryAuthProvider = ""
+		u.updateMetadata()
+	}
+}
+
+// UpdateCredentialData is a placeholder method that delegates to UserCredentials
+// Following Go best practices, this returns a clear error indicating proper separation
+func (u *User) UpdateCredentialData(providerType auth.ProviderType, newAuthData any) error {
+	return errors.NewAppError(errors.CodeNotImplemented,
+		"Credential updates should be handled through UserCredentials repository, not User entity")
+}
+
+// GetAuthenticationData is a placeholder method that delegates to UserCredentials
+// Following Go best practices, this returns clear indication of proper separation
+func (u *User) GetAuthenticationData(providerType auth.ProviderType) (any, bool) {
+	// This method exists for interface compatibility but should not be used
+	// Authentication data is handled by UserCredentials repository
+	return nil, false
 }
 
 // updateMetadata ensures consistent metadata updates for all state changes

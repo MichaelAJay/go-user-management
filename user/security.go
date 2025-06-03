@@ -140,7 +140,7 @@ func NewUserSecurity(userID string) *UserSecurity {
 
 // IsLocked returns true if the account is currently locked (temporary or permanent)
 func (us *UserSecurity) IsLocked() bool {
-	// Check temporary lock
+	// Check for any active lock (temporary or permanent)
 	return us.LockedUntil != nil && time.Now().Before(*us.LockedUntil)
 }
 
@@ -197,21 +197,41 @@ func (us *UserSecurity) ProcessSuccessfulLogin(ipAddress string) {
 	us.updateMetadata()
 }
 
-// LockAccount manually locks the account with a reason
+// LockAccount locks the account with an optional expiration time
+// If until is nil, creates a permanent lock (far future date)
+// If until is provided, creates a temporary lock that expires at that time
 func (us *UserSecurity) LockAccount(until *time.Time, reason string) {
-	us.LockedUntil = until
+	if until == nil {
+		// Permanent lock - set to far future (100 years from now)
+		farFuture := time.Now().AddDate(100, 0, 0)
+		us.LockedUntil = &farFuture
+	} else {
+		us.LockedUntil = until
+	}
 	us.LockReason = reason
 
 	event := SecurityEvent{
 		Type:      SecurityEventAccountLocked,
 		Timestamp: time.Now(),
 		Details: map[string]interface{}{
-			"reason": reason,
-			"until":  until,
+			"reason":    reason,
+			"until":     us.LockedUntil,
+			"permanent": until == nil,
 		},
 	}
 	us.addSecurityEvent(event)
 	us.updateMetadata()
+}
+
+// IsPermanentlyLocked returns true if the account is permanently locked
+// (locked until far in the future)
+func (us *UserSecurity) IsPermanentlyLocked() bool {
+	if us.LockedUntil == nil {
+		return false
+	}
+	// Consider permanent if locked for more than 10 years in the future
+	tenYearsFromNow := time.Now().AddDate(10, 0, 0)
+	return us.LockedUntil.After(tenYearsFromNow)
 }
 
 // UnlockAccount removes any account locks

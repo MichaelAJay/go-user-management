@@ -396,33 +396,42 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		return nil, errors.NewAppError(errors.CodeInternalError, "Authentication failed")
 	}
 
-	// Check if user can authenticate
-	if !user.CanAuthenticate() {
-		// Get security state to check for locks
-		security, err := s.securityRepository.GetSecurity(ctx, user.ID)
-		if err != nil {
-			s.logger.Error("Failed to get user security state",
-				logger.Field{Key: "error", Value: err.Error()},
-				logger.Field{Key: "user_id", Value: user.ID})
-			return nil, errors.NewAppError(errors.CodeInternalError, "Authentication failed")
-		}
+	// Get security state FIRST to check for locks - this handles both temporary and permanent locks
+	security, err := s.securityRepository.GetSecurity(ctx, user.ID)
+	if err != nil {
+		s.logger.Error("Failed to get user security state",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: user.ID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Authentication failed")
+	}
 
-		s.logger.Warn("Authentication attempt for non-authenticatable user",
+	// Check for security locks (temporary locks via UserSecurity)
+	if security.IsLocked() {
+		s.logger.Warn("Authentication attempt for locked user",
 			logger.Field{Key: "user_id", Value: user.ID},
-			logger.Field{Key: "status", Value: user.Status.String()},
-			logger.Field{Key: "is_locked", Value: security.IsLocked()})
+			logger.Field{Key: "lock_reason", Value: security.LockReason},
+			logger.Field{Key: "locked_until", Value: security.LockedUntil})
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.authenticate_user.account_locked",
 		})
 		counter.Inc()
 
-		if security.IsLocked() {
-			var lockMessage string
-			if security.LockedUntil != nil {
-				lockMessage = security.LockedUntil.Format(time.RFC3339)
-			}
-			return nil, errors.NewAccountLockedError(lockMessage)
+		var lockMessage string
+		if security.LockedUntil != nil {
+			lockMessage = security.LockedUntil.Format(time.RFC3339)
 		}
+		return nil, errors.NewAccountLockedError(lockMessage)
+	}
+
+	// Now check if user can authenticate (User status checks)
+	if !user.CanAuthenticate() {
+		s.logger.Warn("Authentication attempt for non-authenticatable user",
+			logger.Field{Key: "user_id", Value: user.ID},
+			logger.Field{Key: "status", Value: user.Status.String()})
+		counter := s.metrics.Counter(metrics.Options{
+			Name: "user_service.authenticate_user.account_not_active",
+		})
+		counter.Inc()
 
 		return nil, errors.NewAppError(errors.CodeAccountNotActivated, "Account is not active")
 	}
@@ -468,15 +477,7 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 	// Pass raw bytes to provider - provider handles its own deserialization
 	authResult, err := provider.Authenticate(ctx, user.ID, convertedCredentials, decryptedAuthData)
 	if err != nil {
-		// Get security state to process failed authentication
-		security, secErr := s.securityRepository.GetSecurity(ctx, user.ID)
-		if secErr != nil {
-			s.logger.Error("Failed to get security state for failed auth processing",
-				logger.Field{Key: "error", Value: secErr.Error()})
-			return nil, errors.NewAppError(errors.CodeInternalError, "Authentication processing failed")
-		}
-
-		// Clone security state to avoid race conditions
+		// Clone security state to avoid race conditions (we already have it from above)
 		securityCopy := security.Clone()
 
 		// Process failed authentication using business logic with pre-loaded config
@@ -501,16 +502,7 @@ func (s *userService) AuthenticateUser(ctx context.Context, req *AuthenticateReq
 		return nil, errors.NewInvalidCredentialsError()
 	}
 
-	// Get security state to process successful authentication
-	security, err := s.securityRepository.GetSecurity(ctx, user.ID)
-	if err != nil {
-		s.logger.Error("Failed to get security state for successful auth processing",
-			logger.Field{Key: "error", Value: err.Error()})
-		// Continue despite error as authentication was successful
-		security = NewUserSecurity(user.ID) // Create default if missing
-	}
-
-	// Clone security state to avoid race conditions
+	// Clone security state to avoid race conditions (we already have it from above)
 	securityCopy := security.Clone()
 
 	// Process successful authentication using business logic
@@ -1366,9 +1358,6 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		return nil, errors.NewAppError(errors.CodeUserDeactivated, "Cannot lock deactivated user")
 	}
 
-	// Clone user to avoid race conditions
-	userCopy := user.Clone()
-
 	// Get or create security state
 	security, err := s.securityRepository.GetSecurity(ctx, userID)
 	if err != nil {
@@ -1386,23 +1375,13 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	// Clone security state to avoid race conditions
 	securityCopy := security.Clone()
 
-	// Lock user account using security business logic
-	if until != nil {
-		securityCopy.LockAccount(until, reason)
-	} else {
-		// For permanent locks, also update User status
-		if err := userCopy.LockAccountPermanently(); err != nil {
-			return nil, err
-		}
-		securityCopy.LockAccount(nil, reason) // Permanent lock in security as well
-	}
+	// Lock user account using simplified security business logic
+	// Both temporary and permanent locks are handled by UserSecurity
+	securityCopy.LockAccount(until, reason)
 
-	// Save both user and security state
-	if err := s.userRepository.Update(ctx, userCopy); err != nil {
-		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
-		}
-		s.logger.Error("Failed to lock user",
+	// Save security state using the clone
+	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
+		s.logger.Error("Failed to update security state for lock",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
 		counter := s.metrics.Counter(metrics.Options{
@@ -1412,17 +1391,6 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to lock user")
 	}
 
-	// Save security state using the clone
-	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
-		s.logger.Error("Failed to update security state for lock",
-			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: userID})
-		// Continue as user status was updated
-	}
-
-	// Update cache
-	s.cacheUser(ctx, userCopy)
-
 	s.logger.Info("User locked successfully",
 		logger.Field{Key: "user_id", Value: userID},
 		logger.Field{Key: "reason", Value: reason})
@@ -1431,7 +1399,7 @@ func (s *userService) LockUser(ctx context.Context, userID string, until *time.T
 	})
 	counter.Inc()
 
-	return s.buildUserResponse(ctx, userCopy)
+	return s.buildUserResponse(ctx, user)
 }
 
 // UnlockUser unlocks a user account
@@ -1466,39 +1434,32 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 	// Get security state to check if user is actually locked
 	security, err := s.securityRepository.GetSecurity(ctx, userID)
 	if err != nil {
-		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
-			s.logger.Error("Failed to get security state for unlocking",
-				logger.Field{Key: "error", Value: err.Error()},
-				logger.Field{Key: "user_id", Value: userID})
-			return nil, errors.NewAppError(errors.CodeInternalError, "Failed to get security state")
+		if errors.IsErrorType(err, errors.ErrUserNotFound) {
+			// No security record means not locked
+			s.logger.Info("User has no security record, treating as not locked", logger.Field{Key: "user_id", Value: userID})
+			return s.buildUserResponse(ctx, user)
 		}
-		// No security record means not locked
-		s.logger.Info("User has no security record, treating as not locked", logger.Field{Key: "user_id", Value: userID})
-		return s.buildUserResponse(ctx, user)
+		s.logger.Error("Failed to get security state for unlocking",
+			logger.Field{Key: "error", Value: err.Error()},
+			logger.Field{Key: "user_id", Value: userID})
+		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to get security state")
 	}
 
 	// Check if user is actually locked
-	if !security.IsLocked() && user.Status != UserStatusLocked {
+	if !security.IsLocked() {
 		s.logger.Info("User is not locked", logger.Field{Key: "user_id", Value: userID})
 		return s.buildUserResponse(ctx, user)
 	}
 
-	// Clone user to avoid race conditions
-	userCopy := user.Clone()
-
 	// Clone security state to avoid race conditions
 	securityCopy := security.Clone()
 
-	// Unlock user account in both User and Security entities
-	userCopy.UnlockAccount()
+	// Unlock user account using security business logic
 	securityCopy.UnlockAccount()
 
-	// Save both user and security state using the clones
-	if err := s.userRepository.Update(ctx, userCopy); err != nil {
-		if errors.IsErrorType(err, errors.ErrVersionMismatch) {
-			return nil, errors.NewVersionMismatchError(userCopy.Version, userCopy.Version)
-		}
-		s.logger.Error("Failed to unlock user",
+	// Save security state using the clone
+	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
+		s.logger.Error("Failed to update security state for unlock",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: userID})
 		counter := s.metrics.Counter(metrics.Options{
@@ -1508,24 +1469,13 @@ func (s *userService) UnlockUser(ctx context.Context, userID string) (*UserRespo
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to unlock user")
 	}
 
-	// Save security state using the clone
-	if err := s.securityRepository.UpdateSecurity(ctx, securityCopy); err != nil {
-		s.logger.Error("Failed to update security state for unlock",
-			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: userID})
-		// Continue as user status was updated
-	}
-
-	// Update cache
-	s.cacheUser(ctx, userCopy)
-
 	s.logger.Info("User unlocked successfully", logger.Field{Key: "user_id", Value: userID})
 	counter := s.metrics.Counter(metrics.Options{
 		Name: "user_service.unlock_user.success",
 	})
 	counter.Inc()
 
-	return s.buildUserResponse(ctx, userCopy)
+	return s.buildUserResponse(ctx, user)
 }
 
 // ListUsers retrieves users with pagination and filtering
@@ -1773,7 +1723,10 @@ func (s *userService) buildUserResponse(ctx context.Context, user *User) (*UserR
 	if security, err := s.securityRepository.GetSecurity(ctx, user.ID); err == nil {
 		response.LastLoginAt = security.LastLoginAt
 		response.AccountLocked = security.IsLocked()
-		// Note: LoginAttempts and LockedUntil are included in DetailedUserResponse, not UserResponse
+
+		// CRITICAL: Properly calculate CanAuthenticate considering both User status AND security locks
+		// This is the key architectural fix - service layer orchestrates complete authentication logic
+		response.CanAuthenticate = user.CanAuthenticate() && !security.IsLocked()
 	} else if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 		// Log error but don't fail the entire request
 		s.logger.Warn("Failed to get security data for user response",
@@ -1812,6 +1765,10 @@ func (s *userService) buildDetailedUserResponse(ctx context.Context, user *User)
 		// Update UserResponse fields
 		baseResponse.UserResponse.LastLoginAt = security.LastLoginAt
 		baseResponse.UserResponse.AccountLocked = security.IsLocked()
+
+		// CRITICAL: Properly calculate CanAuthenticate considering both User status AND security locks
+		// This maintains consistency with buildUserResponse
+		baseResponse.UserResponse.CanAuthenticate = user.CanAuthenticate() && !security.IsLocked()
 
 		// Update DetailedUserResponse specific fields
 		baseResponse.LoginAttempts = security.LoginAttempts

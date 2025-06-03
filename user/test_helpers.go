@@ -104,3 +104,40 @@ func createValidUserForTesting() *User {
 func createEncryptedDataForTesting(data string) []byte {
 	return []byte("encrypted:" + data)
 }
+
+// createCompleteTestUser creates a user with all associated entities (User + Security + Credentials)
+// This helper ensures tests have complete user setup for authentication scenarios
+func createCompleteTestUser(service UserService, ctx context.Context) (*UserResponse, error) {
+	// Create user via service - this automatically creates User + Security + Credentials
+	createReq := &CreateUserRequest{
+		FirstName:              "John",
+		LastName:               "Doe",
+		Email:                  "john.doe@example.com",
+		Credentials:            "password123",
+		AuthenticationProvider: auth.ProviderTypePassword,
+	}
+
+	userResponse, err := service.CreateUser(ctx, createReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create user: %w", err)
+	}
+
+	return userResponse, nil
+}
+
+// createAndActivateTestUser creates a complete user and activates them for authentication testing
+func createAndActivateTestUser(service UserService, ctx context.Context) (*UserResponse, error) {
+	// Create complete user
+	userResponse, err := createCompleteTestUser(service, ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Activate the user so they can authenticate
+	activatedUser, err := service.ActivateUser(ctx, userResponse.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to activate user: %w", err)
+	}
+
+	return activatedUser, nil
+}

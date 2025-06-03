@@ -158,16 +158,25 @@ func TestUser_ActivateAccount_FromPending(t *testing.T) {
 }
 
 func TestUser_ActivateAccount_FromLocked(t *testing.T) {
+	// NOTE: In our new coherent architecture, "locks" are handled by UserSecurity
+	// Suspended users cannot be activated directly - they need to be unsuspended first
+	// This test now verifies that activation from suspended state is properly blocked
 	user := createValidUser()
-	user.Status = UserStatusLocked
+	user.Status = UserStatusSuspended
 
 	err := user.ActivateAccount()
-	if err != nil {
-		t.Errorf("Expected successful activation, got error: %v", err)
+	if err == nil {
+		t.Error("Expected error when activating suspended user")
 	}
 
-	if user.Status != UserStatusActive {
-		t.Errorf("Expected status %s, got %s", UserStatusActive, user.Status)
+	appErr, ok := err.(*errors.AppError)
+	if !ok || appErr.Code != errors.CodeUserSuspended {
+		t.Errorf("Expected CodeUserSuspended, got: %v", err)
+	}
+
+	// Status should remain suspended
+	if user.Status != UserStatusSuspended {
+		t.Errorf("Expected status to remain %s, got %s", UserStatusSuspended, user.Status)
 	}
 }
 
@@ -203,21 +212,6 @@ func TestUser_ActivateAccount_FromDeactivated(t *testing.T) {
 	appErr, ok := err.(*errors.AppError)
 	if !ok || appErr.Code != errors.CodeUserDeactivated {
 		t.Errorf("Expected CodeUserDeactivated, got: %v", err)
-	}
-}
-
-func TestUser_ActivateAccount_FromSuspended(t *testing.T) {
-	user := createValidUser()
-	user.Status = UserStatusSuspended
-
-	err := user.ActivateAccount()
-	if err == nil {
-		t.Error("Expected error when activating suspended user")
-	}
-
-	appErr, ok := err.(*errors.AppError)
-	if !ok || appErr.Code != errors.CodeUserSuspended {
-		t.Errorf("Expected CodeUserSuspended, got: %v", err)
 	}
 }
 
@@ -280,7 +274,7 @@ func TestUser_DeactivateAccount_FromAnyStatus(t *testing.T) {
 		UserStatusActive,
 		UserStatusSuspended,
 		UserStatusPendingVerification,
-		UserStatusLocked,
+		UserStatusSuspended,
 	}
 
 	for _, status := range statuses {
@@ -324,37 +318,15 @@ func TestUser_DeactivateAccount_AlreadyDeactivated(t *testing.T) {
 }
 
 func TestUser_LockAccount_FromActive(t *testing.T) {
-	user := createValidUser()
-	user.Status = UserStatusActive
-	initialVersion := user.Version
-
-	err := user.LockAccountPermanently()
-	if err != nil {
-		t.Errorf("Expected successful lock, got error: %v", err)
-	}
-
-	if user.Status != UserStatusLocked {
-		t.Errorf("Expected status %s, got %s", UserStatusLocked, user.Status)
-	}
-
-	if user.Version != initialVersion+1 {
-		t.Errorf("Expected version to increment to %d, got %d", initialVersion+1, user.Version)
-	}
+	// NOTE: Lock functionality has been moved to UserSecurity entity
+	// This test is no longer relevant as User entity doesn't handle locks
+	t.Skip("Lock functionality moved to UserSecurity - see security_test.go")
 }
 
 func TestUser_LockAccount_FromDeactivated(t *testing.T) {
-	user := createValidUser()
-	user.Status = UserStatusDeactivated
-
-	err := user.LockAccountPermanently()
-	if err == nil {
-		t.Error("Expected error when locking deactivated user")
-	}
-
-	appErr, ok := err.(*errors.AppError)
-	if !ok || appErr.Code != errors.CodeUserDeactivated {
-		t.Errorf("Expected CodeUserDeactivated, got: %v", err)
-	}
+	// NOTE: Lock functionality has been moved to UserSecurity entity
+	// This test is no longer relevant as User entity doesn't handle locks
+	t.Skip("Lock functionality moved to UserSecurity - see security_test.go")
 }
 
 // Profile Update Tests (8 tests)
@@ -619,7 +591,6 @@ func TestUser_IsActive_StatusCheck(t *testing.T) {
 	nonActiveStatuses := []UserStatus{
 		UserStatusPendingVerification,
 		UserStatusSuspended,
-		UserStatusLocked,
 		UserStatusDeactivated,
 	}
 
@@ -644,7 +615,6 @@ func TestUser_CanAuthenticate_StatusCheck(t *testing.T) {
 	nonAuthStatuses := []UserStatus{
 		UserStatusPendingVerification,
 		UserStatusSuspended,
-		UserStatusLocked,
 		UserStatusDeactivated,
 	}
 
@@ -710,17 +680,35 @@ func TestUser_GetDisplayName_WithoutEncrypter(t *testing.T) {
 	}
 }
 
-// Additional tests for UnlockAccount method
+// Authentication Provider Management Tests (5 tests)
 
-func TestUser_UnlockAccount_Success(t *testing.T) {
+func TestUser_HasAuthenticationProvider_True(t *testing.T) {
 	user := createValidUser()
-	user.Status = UserStatusLocked
+	user.PrimaryAuthProvider = auth.ProviderTypePassword
+
+	if !user.HasAuthenticationProvider(auth.ProviderTypePassword) {
+		t.Error("Expected HasAuthenticationProvider to return true for primary provider")
+	}
+}
+
+func TestUser_HasAuthenticationProvider_False(t *testing.T) {
+	user := createValidUser()
+	user.PrimaryAuthProvider = auth.ProviderTypePassword
+
+	if user.HasAuthenticationProvider(auth.ProviderTypeOAuth) {
+		t.Error("Expected HasAuthenticationProvider to return false for non-primary provider")
+	}
+}
+
+func TestUser_AddAuthenticationProvider_Success(t *testing.T) {
+	user := createValidUser()
+	user.PrimaryAuthProvider = "" // Clear primary provider
 	initialVersion := user.Version
 
-	user.UnlockAccount()
+	user.AddAuthenticationProvider(auth.ProviderTypeOAuth)
 
-	if user.Status != UserStatusActive {
-		t.Errorf("Expected status %s, got %s", UserStatusActive, user.Status)
+	if user.PrimaryAuthProvider != auth.ProviderTypeOAuth {
+		t.Errorf("Expected PrimaryAuthProvider to be %s, got %s", auth.ProviderTypeOAuth, user.PrimaryAuthProvider)
 	}
 
 	if user.Version != initialVersion+1 {
@@ -728,16 +716,15 @@ func TestUser_UnlockAccount_Success(t *testing.T) {
 	}
 }
 
-func TestUser_UnlockAccount_NotLocked(t *testing.T) {
+func TestUser_AddAuthenticationProvider_NoChangeWhenExists(t *testing.T) {
 	user := createValidUser()
-	user.Status = UserStatusActive
+	user.PrimaryAuthProvider = auth.ProviderTypePassword
 	initialVersion := user.Version
 
-	user.UnlockAccount()
+	user.AddAuthenticationProvider(auth.ProviderTypeOAuth)
 
-	// Should be no-op if not locked
-	if user.Status != UserStatusActive {
-		t.Errorf("Expected status to remain %s, got %s", UserStatusActive, user.Status)
+	if user.PrimaryAuthProvider != auth.ProviderTypePassword {
+		t.Errorf("Expected PrimaryAuthProvider to remain %s, got %s", auth.ProviderTypePassword, user.PrimaryAuthProvider)
 	}
 
 	if user.Version != initialVersion {
@@ -745,12 +732,67 @@ func TestUser_UnlockAccount_NotLocked(t *testing.T) {
 	}
 }
 
-// Test GetID method for completeness
+func TestUser_RemoveAuthenticationProvider_Success(t *testing.T) {
+	user := createValidUser()
+	user.PrimaryAuthProvider = auth.ProviderTypePassword
+	initialVersion := user.Version
 
-func TestUser_GetID(t *testing.T) {
+	user.RemoveAuthenticationProvider(auth.ProviderTypePassword)
+
+	if user.PrimaryAuthProvider != "" {
+		t.Errorf("Expected PrimaryAuthProvider to be cleared, got %s", user.PrimaryAuthProvider)
+	}
+
+	if user.Version != initialVersion+1 {
+		t.Errorf("Expected version to increment to %d, got %d", initialVersion+1, user.Version)
+	}
+}
+
+func TestUser_RemoveAuthenticationProvider_NoChangeWhenDifferent(t *testing.T) {
+	user := createValidUser()
+	user.PrimaryAuthProvider = auth.ProviderTypePassword
+	initialVersion := user.Version
+
+	user.RemoveAuthenticationProvider(auth.ProviderTypeOAuth)
+
+	if user.PrimaryAuthProvider != auth.ProviderTypePassword {
+		t.Errorf("Expected PrimaryAuthProvider to remain %s, got %s", auth.ProviderTypePassword, user.PrimaryAuthProvider)
+	}
+
+	if user.Version != initialVersion {
+		t.Errorf("Expected version to remain %d, got %d", initialVersion, user.Version)
+	}
+}
+
+func TestUser_UpdateCredentialData_ReturnsNotImplementedError(t *testing.T) {
 	user := createValidUser()
 
-	if user.GetID() != user.ID {
-		t.Errorf("Expected GetID to return %s, got %s", user.ID, user.GetID())
+	err := user.UpdateCredentialData(auth.ProviderTypePassword, "new_auth_data")
+
+	if err == nil {
+		t.Error("Expected UpdateCredentialData to return error")
+	}
+
+	// Check if it's an AppError with the correct code
+	if appErr, ok := err.(*errors.AppError); ok {
+		if appErr.Code != errors.CodeNotImplemented {
+			t.Errorf("Expected CodeNotImplemented error, got: %v", appErr.Code)
+		}
+	} else {
+		t.Errorf("Expected AppError with CodeNotImplemented, got: %v", err)
+	}
+}
+
+func TestUser_GetAuthenticationData_ReturnsFalse(t *testing.T) {
+	user := createValidUser()
+
+	data, exists := user.GetAuthenticationData(auth.ProviderTypePassword)
+
+	if data != nil {
+		t.Errorf("Expected GetAuthenticationData to return nil, got: %v", data)
+	}
+
+	if exists {
+		t.Error("Expected GetAuthenticationData to return false for exists")
 	}
 }

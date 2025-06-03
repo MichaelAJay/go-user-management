@@ -173,8 +173,19 @@ func TestUserSecurity_LockAccount_PermanentLock(t *testing.T) {
 
 	security.LockAccount(nil, reason) // nil means permanent lock
 
-	if security.LockedUntil != nil {
-		t.Error("Expected LockedUntil to be nil for permanent lock")
+	// New architecture: permanent locks use far future date, not nil
+	if security.LockedUntil == nil {
+		t.Error("Expected LockedUntil to be set to far future for permanent lock")
+	}
+
+	// Verify it's truly a permanent lock (far in the future)
+	if !security.IsPermanentlyLocked() {
+		t.Error("Expected IsPermanentlyLocked to return true")
+	}
+
+	// Verify it's currently locked
+	if !security.IsLocked() {
+		t.Error("Expected IsLocked to return true for permanent lock")
 	}
 
 	if security.LockReason != reason {
