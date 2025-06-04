@@ -59,10 +59,11 @@ type Config struct {
 }
 
 // NewProvider creates a new repository provider based on the configuration
+// Note: For PostgreSQL, you should create the pool separately and use NewPostgresProvider directly
 func NewProvider(config Config) (Provider, error) {
 	switch config.Type {
 	case ProviderTypePostgres:
-		return NewPostgresProvider(config)
+		return nil, fmt.Errorf("use NewPostgresProvider(pool) directly instead of NewProvider for PostgreSQL")
 	case ProviderTypeMemory:
 		return NewMemoryProvider(config)
 	default:
@@ -79,39 +80,17 @@ type PostgresProvider struct {
 }
 
 // NewPostgresProvider creates a new PostgreSQL repository provider
-func NewPostgresProvider(config Config) (*PostgresProvider, error) {
-	if config.DatabaseURL == "" {
-		return nil, fmt.Errorf("database URL is required for PostgreSQL provider")
-	}
-
-	// Configure connection pool
-	poolConfig, err := pgxpool.ParseConfig(config.DatabaseURL)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse database URL: %w", err)
-	}
-
-	// Configure connection pool settings if specified
-	if config.MaxOpenConns > 0 {
-		poolConfig.MaxConns = int32(config.MaxOpenConns)
-	}
-	if config.MaxIdleConns > 0 {
-		poolConfig.MinConns = int32(config.MaxIdleConns)
-	}
-	if config.ConnMaxLifetime != "" {
-		if duration, err := time.ParseDuration(config.ConnMaxLifetime); err == nil {
-			poolConfig.MaxConnLifetime = duration
-		}
-	}
-
-	// Create connection pool
-	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection pool: %w", err)
+// The caller is responsible for managing the connection pool lifecycle
+func NewPostgresProvider(pool *pgxpool.Pool) (*PostgresProvider, error) {
+	if pool == nil {
+		return nil, fmt.Errorf("database pool is required")
 	}
 
 	// Test the connection
-	if err := pool.Ping(context.Background()); err != nil {
-		pool.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := pool.Ping(ctx); err != nil {
 		return nil, fmt.Errorf("failed to ping database: %w", err)
 	}
 
@@ -141,22 +120,6 @@ func (p *PostgresProvider) GetAuthRepository() AuthenticationRepository {
 // GetSecurityRepository returns the security repository implementation
 func (p *PostgresProvider) GetSecurityRepository() UserSecurityRepository {
 	return p.securityRepo
-}
-
-// Close closes the database connection
-func (p *PostgresProvider) Close() error {
-	if p.db != nil {
-		return p.db.Close()
-	}
-	return nil
-}
-
-// Ping checks if the database is accessible
-func (p *PostgresProvider) Ping() error {
-	if p.db != nil {
-		return p.db.Ping()
-	}
-	return fmt.Errorf("database connection is nil")
 }
 
 // MemoryProvider implements Provider for in-memory storage (useful for testing)
