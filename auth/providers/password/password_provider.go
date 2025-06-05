@@ -285,7 +285,7 @@ func (p *Provider) PrepareCredentials(ctx context.Context, credentials any) ([]b
 
 // verifyPassword verifies a password against stored password data.
 // This is a utility method used internally by the provider.
-func (p *Provider) verifyPassword(ctx context.Context, passwordData *StoredPasswordData, password string) (bool, error) {
+func (p *Provider) verifyPassword(_ context.Context, passwordData *StoredPasswordData, password string) (bool, error) {
 	// Verify password using encrypter
 	valid, err := p.encrypter.VerifyPassword(passwordData.HashedPassword, []byte(password))
 	if err != nil {
