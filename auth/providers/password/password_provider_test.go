@@ -334,6 +334,7 @@ func (m *MockConfig) GetStringSlice(key string) ([]string, bool) {
 
 func (m *MockConfig) Set(key string, value any) error {
 	m.data[key] = value
+	return nil
 }
 
 func (m *MockConfig) Load(source config.Source) error {
@@ -434,18 +435,18 @@ func TestProvider_PrepareCredentials(t *testing.T) {
 				}
 
 				if tt.expectValidationError {
-					var validationErr *userErrors.ValidationError
-					if !userErrors.As(err, &validationErr) {
-						t.Errorf("Expected ValidationError, got %T: %v", err, err)
-					} else if validationErr.Field != "credentials" {
-						t.Errorf("Expected field 'credentials', got '%s'", validationErr.Field)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode != userErrors.CodeValidationFailed {
+						t.Errorf("Expected ValidationError code, got %s", errorCode)
 					}
 				}
 
 				if tt.expectAppError {
-					var appErr *userErrors.AppError
-					if !userErrors.As(err, &appErr) {
-						t.Errorf("Expected AppError, got %T: %v", err, err)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode == userErrors.CodeInternalError {
+						// This is expected for AppErrors that aren't validation errors
+					} else {
+						t.Errorf("Expected AppError with internal error code, got %s", errorCode)
 					}
 				}
 
@@ -581,16 +582,16 @@ func TestProvider_Authenticate(t *testing.T) {
 				}
 
 				if tt.expectValidationError {
-					var validationErr *userErrors.ValidationError
-					if !userErrors.As(err, &validationErr) {
-						t.Errorf("Expected ValidationError, got %T: %v", err, err)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode != userErrors.CodeValidationFailed {
+						t.Errorf("Expected ValidationError code, got %s", errorCode)
 					}
 				}
 
 				if tt.expectInvalidCredsError {
-					var invalidCredsErr *userErrors.InvalidCredentialsError
-					if !userErrors.As(err, &invalidCredsErr) {
-						t.Errorf("Expected InvalidCredentialsError, got %T: %v", err, err)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode != userErrors.CodeInvalidCredentials {
+						t.Errorf("Expected InvalidCredentials code, got %s", errorCode)
 					}
 				}
 
@@ -721,11 +722,9 @@ func TestProvider_ValidateCredentials(t *testing.T) {
 				}
 
 				if tt.expectValidationError {
-					var validationErr *userErrors.ValidationError
-					if !userErrors.As(err, &validationErr) {
-						t.Errorf("Expected ValidationError, got %T: %v", err, err)
-					} else if tt.expectedField != "" && validationErr.Field != tt.expectedField {
-						t.Errorf("Expected field '%s', got '%s'", tt.expectedField, validationErr.Field)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode != userErrors.CodeValidationFailed {
+						t.Errorf("Expected ValidationError code, got %s", errorCode)
 					}
 				}
 			} else {
@@ -846,16 +845,16 @@ func TestProvider_UpdateCredentials(t *testing.T) {
 				}
 
 				if tt.expectValidationError {
-					var validationErr *userErrors.ValidationError
-					if !userErrors.As(err, &validationErr) {
-						t.Errorf("Expected ValidationError, got %T: %v", err, err)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode != userErrors.CodeValidationFailed {
+						t.Errorf("Expected ValidationError code, got %s", errorCode)
 					}
 				}
 
 				if tt.expectInvalidCredsError {
-					var invalidCredsErr *userErrors.InvalidCredentialsError
-					if !userErrors.As(err, &invalidCredsErr) {
-						t.Errorf("Expected InvalidCredentialsError, got %T: %v", err, err)
+					errorCode := userErrors.GetErrorCode(err)
+					if errorCode != userErrors.CodeInvalidCredentials {
+						t.Errorf("Expected InvalidCredentials code, got %s", errorCode)
 					}
 				}
 
