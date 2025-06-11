@@ -38,18 +38,34 @@ func (m *MockUserRepository) AddUser(user *User) {
 	m.emailHashes[user.HashedEmail] = user.ID
 }
 
-func (m *MockUserRepository) Create(ctx context.Context, user *User) error {
+func (m *MockUserRepository) Create(ctx context.Context, params *CreateUserParams) (*User, error) {
 	if m.shouldFail && m.failOnMethod == "Create" {
-		return errors.NewAppError(errors.CodeInternalError, "repository create failed")
+		return nil, errors.NewAppError(errors.CodeInternalError, "repository create failed")
 	}
 
 	// Check for duplicate email
-	if _, exists := m.emailHashes[user.HashedEmail]; exists {
-		return errors.NewAppError(errors.CodeDuplicateEmail, "user with this email already exists")
+	if _, exists := m.emailHashes[params.HashedEmail]; exists {
+		return nil, errors.NewAppError(errors.CodeDuplicateEmail, "user with this email already exists")
+	}
+
+	// Create a complete User entity with database-generated fields
+	// This simulates what the real repository does
+	now := time.Now()
+	user := &User{
+		ID:                  fmt.Sprintf("mock-user-%d", len(m.users)+1), // Simple ID generation for testing
+		FirstName:           params.FirstName,
+		LastName:            params.LastName,
+		Email:               params.Email,
+		HashedEmail:         params.HashedEmail,
+		PrimaryAuthProvider: params.PrimaryAuthProvider,
+		Status:              UserStatusPendingVerification, // Default status
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		Version:             1, // Initial version
 	}
 
 	m.AddUser(user)
-	return nil
+	return user, nil
 }
 
 func (m *MockUserRepository) GetByHashedEmail(ctx context.Context, hashedEmail string) (*User, error) {
