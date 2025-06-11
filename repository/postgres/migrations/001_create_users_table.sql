@@ -1,14 +1,14 @@
 -- Create users table for core user profile data
 CREATE TABLE IF NOT EXISTS users (
-    id UUID PRIMARY KEY,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     encrypted_first_name BYTEA NOT NULL,
     encrypted_last_name BYTEA NOT NULL,
     encrypted_email BYTEA NOT NULL,
     hashed_email VARCHAR(255) NOT NULL UNIQUE,
     primary_auth_provider VARCHAR(50) NOT NULL,
     status INTEGER NOT NULL DEFAULT 2, -- 0=active, 1=suspended, 2=pending_verification, 3=deactivated
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
     version BIGINT NOT NULL DEFAULT 1
 );
 

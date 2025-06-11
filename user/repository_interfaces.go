@@ -8,6 +8,14 @@ import (
 	"github.com/MichaelAJay/go-user-management/auth"
 )
 
+type CreateUserParams struct {
+	FirstName           []byte
+	LastName            []byte
+	Email               []byte
+	HashedEmail         string
+	PrimaryAuthProvider auth.ProviderType
+}
+
 // UserRepository defines the interface for user data storage operations.
 // This interface follows the Repository pattern, allowing different storage
 // implementations (PostgreSQL, MySQL, MongoDB, etc.) to be used without
@@ -22,7 +30,7 @@ type UserRepository interface {
 	// Create stores a new user in the repository.
 	// The user's Version should be set to 1 before calling this method.
 	// Returns ErrDuplicateEmail if a user with the same HashedEmail already exists.
-	Create(ctx context.Context, user *User) error
+	Create(ctx context.Context, user *CreateUserParams) error
 
 	// GetByHashedEmail retrieves a user by their hashed email address.
 	// This is the primary lookup method for authentication.

@@ -31,11 +31,12 @@ func NewUserRepository(pool *pgxpool.Pool) user.UserRepository {
 func (r *userRepository) Create(ctx context.Context, u *user.User) error {
 	query := `
 		INSERT INTO users (
-			id, encrypted_first_name, encrypted_last_name, encrypted_email, 
+			encrypted_first_name, encrypted_last_name, encrypted_email, 
 			hashed_email, primary_auth_provider, status, created_at, updated_at, version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		RETURNING id`
 
-	_, err := r.pool.Exec(ctx, query,
+	err := r.pool.QueryRow(ctx, query,
 		u.ID,
 		u.FirstName,
 		u.LastName,
@@ -46,7 +47,7 @@ func (r *userRepository) Create(ctx context.Context, u *user.User) error {
 		u.CreatedAt,
 		u.UpdatedAt,
 		u.Version,
-	)
+	).Scan(&u.ID)
 
 	if err != nil {
 		// Check for duplicate email constraint violation using pgx error handling
