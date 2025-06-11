@@ -7,10 +7,6 @@ import (
 )
 
 // Manager defines the interface for authentication management.
-// This interface allows for easier testing by enabling mock implementations.
-//
-// Best Practice: Depend on interfaces, not concretions - this allows for
-// easy testing and makes the code more flexible and maintainable.
 type Manager interface {
 	// RegisterProvider registers an authentication provider with the manager
 	RegisterProvider(provider AuthenticationProvider) error

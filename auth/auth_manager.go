@@ -22,10 +22,8 @@ type manager struct {
 }
 
 // NewManager creates a new authentication manager that implements the Manager interface.
-//
-// Best Practice: Return interfaces, not concrete types - this makes the code
-// more testable and flexible.
 func NewManager(logger logger.Logger, metrics metrics.Registry) Manager {
+	// &manager is a "pointer to manager"
 	return &manager{
 		providers: make(map[ProviderType]AuthenticationProvider),
 		logger:    logger,
@@ -84,7 +82,13 @@ func (m *manager) Authenticate(ctx context.Context, req *AuthenticationRequest) 
 	}
 
 	// Ensure the result has the correct provider type
-	result.ProviderType = req.ProviderType
+	if result.ProviderType != req.ProviderType {
+		m.logger.Error("Authentication result has incorrect provider type",
+			logger.Field{Key: "req_provider_type", Value: string(req.ProviderType)},
+			logger.Field{Key: "result_provider_type", Value: string(result.ProviderType)})
+		return nil, errors.NewAppError("provider_type",
+			fmt.Sprintf("provider %s returned incorrect provider type %s", req.ProviderType, result.ProviderType))
+	}
 
 	counter := m.metrics.Counter(metrics.Options{
 		Name: "auth_manager.authenticate.success",

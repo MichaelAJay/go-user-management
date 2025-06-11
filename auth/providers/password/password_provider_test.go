@@ -271,16 +271,16 @@ func (m *MockHistogram) Tags() metrics.Tags  { return metrics.Tags{} }
 
 // MockConfig provides configurable config for testing
 type MockConfig struct {
-	data map[string]interface{}
+	data map[string]any
 }
 
 func NewMockConfig() *MockConfig {
 	return &MockConfig{
-		data: make(map[string]interface{}),
+		data: make(map[string]any),
 	}
 }
 
-func (m *MockConfig) Get(key string) (interface{}, bool) {
+func (m *MockConfig) Get(key string) (any, bool) {
 	if val, exists := m.data[key]; exists {
 		return val, true
 	}
@@ -382,7 +382,7 @@ func TestProvider_SupportsCredentialUpdate(t *testing.T) {
 func TestProvider_PrepareCredentials(t *testing.T) {
 	tests := []struct {
 		name                  string
-		credentials           interface{}
+		credentials           any
 		hashPasswordReturn    []byte
 		hashPasswordError     error
 		expectError           bool
@@ -500,7 +500,7 @@ func TestProvider_Authenticate(t *testing.T) {
 	tests := []struct {
 		name                    string
 		identifier              string
-		credentials             interface{}
+		credentials             any
 		storedAuthData          []byte
 		verifyPasswordReturn    bool
 		verifyPasswordError     error
@@ -520,9 +520,12 @@ func TestProvider_Authenticate(t *testing.T) {
 			expectError:          false,
 		},
 		{
-			name:                  "invalid credential type",
-			identifier:            "user123",
-			credentials:           "invalid_string",
+			name:       "invalid credential type",
+			identifier: "user123",
+			// note: not an address to PasswordCredentials
+			credentials: PasswordCredentials{
+				Password: "correct_password",
+			},
 			storedAuthData:        createValidStoredAuthData(t),
 			expectError:           true,
 			expectValidationError: true,
@@ -625,7 +628,9 @@ func TestProvider_Authenticate(t *testing.T) {
 			}
 
 			// Verify encrypter calls for valid credentials
-			if passwordCreds, ok := tt.credentials.(*PasswordCredentials); ok && len(tt.storedAuthData) > 0 {
+			// Only verify calls when we expect to reach the password verification step
+			if passwordCreds, ok := tt.credentials.(*PasswordCredentials); ok && len(tt.storedAuthData) > 0 && !tt.expectError {
+				// For successful authentication, VerifyPassword should be called once
 				if len(mockEncrypter.verifyPasswordCalls) != 1 {
 					t.Errorf("Expected 1 verify call, got %d", len(mockEncrypter.verifyPasswordCalls))
 				} else {
@@ -635,6 +640,25 @@ func TestProvider_Authenticate(t *testing.T) {
 						t.Errorf("Expected password %s, got %s",
 							string(expectedPassword), string(call.Password))
 					}
+				}
+			} else if passwordCreds, ok := tt.credentials.(*PasswordCredentials); ok && len(tt.storedAuthData) > 0 && tt.expectInvalidCredsError {
+				// For invalid credentials error (wrong password or verification error),
+				// VerifyPassword should still be called once
+				if len(mockEncrypter.verifyPasswordCalls) != 1 {
+					t.Errorf("Expected 1 verify call for invalid credentials test, got %d", len(mockEncrypter.verifyPasswordCalls))
+				} else {
+					call := mockEncrypter.verifyPasswordCalls[0]
+					expectedPassword := []byte(passwordCreds.Password)
+					if string(call.Password) != string(expectedPassword) {
+						t.Errorf("Expected password %s, got %s",
+							string(expectedPassword), string(call.Password))
+					}
+				}
+			} else {
+				// For all other cases (invalid JSON, validation errors, etc.),
+				// VerifyPassword should not be called
+				if len(mockEncrypter.verifyPasswordCalls) != 0 {
+					t.Errorf("Expected 0 verify calls for this test case, got %d", len(mockEncrypter.verifyPasswordCalls))
 				}
 			}
 		})
@@ -646,7 +670,7 @@ func TestProvider_Authenticate(t *testing.T) {
 func TestProvider_ValidateCredentials(t *testing.T) {
 	tests := []struct {
 		name                  string
-		credentials           interface{}
+		credentials           any
 		userInfo              *auth.UserInfo
 		expectError           bool
 		expectValidationError bool
@@ -723,8 +747,17 @@ func TestProvider_ValidateCredentials(t *testing.T) {
 
 				if tt.expectValidationError {
 					errorCode := userErrors.GetErrorCode(err)
-					if errorCode != userErrors.CodeValidationFailed {
-						t.Errorf("Expected ValidationError code, got %s", errorCode)
+					// For weak password errors, we expect WEAK_PASSWORD code
+					// For credential type errors, we expect VALIDATION_FAILED code
+					if tt.name == "invalid credential type" {
+						if errorCode != userErrors.CodeValidationFailed {
+							t.Errorf("Expected ValidationError code, got %s", errorCode)
+						}
+					} else {
+						// Weak password test cases should return WEAK_PASSWORD code
+						if errorCode != userErrors.CodeWeakPassword {
+							t.Errorf("Expected WeakPassword code, got %s", errorCode)
+						}
 					}
 				}
 			} else {
@@ -742,8 +775,8 @@ func TestProvider_UpdateCredentials(t *testing.T) {
 	tests := []struct {
 		name                    string
 		userID                  string
-		oldCredentials          interface{}
-		newCredentials          interface{}
+		oldCredentials          any
+		newCredentials          any
 		storedAuthData          []byte
 		verifyPasswordReturn    bool
 		verifyPasswordError     error
@@ -889,12 +922,12 @@ func TestProvider_UpdateCredentials(t *testing.T) {
 func TestLoadConfig(t *testing.T) {
 	tests := []struct {
 		name           string
-		configData     map[string]interface{}
+		configData     map[string]any
 		expectedConfig *Config
 	}{
 		{
 			name:       "default configuration",
-			configData: map[string]interface{}{},
+			configData: map[string]any{},
 			expectedConfig: &Config{
 				MinLength:      8,
 				MaxLength:      128,
@@ -907,7 +940,7 @@ func TestLoadConfig(t *testing.T) {
 		},
 		{
 			name: "custom configuration",
-			configData: map[string]interface{}{
+			configData: map[string]any{
 				"password_provider.min_length":      12,
 				"password_provider.max_length":      256,
 				"password_provider.require_upper":   false,
