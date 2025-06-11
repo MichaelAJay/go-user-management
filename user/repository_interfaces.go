@@ -30,7 +30,7 @@ type UserRepository interface {
 	// Create stores a new user in the repository.
 	// The user's Version should be set to 1 before calling this method.
 	// Returns ErrDuplicateEmail if a user with the same HashedEmail already exists.
-	Create(ctx context.Context, user *CreateUserParams) error
+	Create(ctx context.Context, user *CreateUserParams) (*User, error)
 
 	// GetByHashedEmail retrieves a user by their hashed email address.
 	// This is the primary lookup method for authentication.

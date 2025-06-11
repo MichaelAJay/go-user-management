@@ -297,18 +297,18 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process credentials")
 	}
 
-	// Create user entity
-	user := NewUser(req.FirstName, req.LastName, normalizedEmail, string(hashedEmail), req.AuthenticationProvider)
-	if err := user.UpdateProfileData(encryptedFirstName, encryptedLastName, encryptedEmail, string(hashedEmail)); err != nil {
-		s.logger.Error("Failed to update user profile data", logger.Field{Key: "error", Value: err.Error()})
-		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to process user data")
-	}
-
 	// Store user in repository
-	if err := s.userRepository.Create(ctx, user); err != nil {
+	params := &CreateUserParams{
+		FirstName:           encryptedFirstName,
+		LastName:            encryptedLastName,
+		Email:               encryptedEmail,
+		HashedEmail:         string(hashedEmail),
+		PrimaryAuthProvider: req.AuthenticationProvider,
+	}
+	createdUser, err := s.userRepository.Create(ctx, params)
+	if err != nil {
 		s.logger.Error("Failed to create user in repository",
-			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: user.ID})
+			logger.Field{Key: "error", Value: err.Error()})
 		counter := s.metrics.Counter(metrics.Options{
 			Name: "user_service.create_user.repository_error",
 		})
@@ -324,33 +324,33 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to encrypt auth data")
 	}
 
-	credentials := NewUserCredentials(user.ID, req.AuthenticationProvider, encryptedAuthData)
+	credentials := NewUserCredentials(createdUser.ID, req.AuthenticationProvider, encryptedAuthData)
 	if err := s.authRepository.CreateCredentials(ctx, credentials); err != nil {
 		s.logger.Error("Failed to create user credentials",
 			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: user.ID})
+			logger.Field{Key: "user_id", Value: createdUser.ID})
 		// TODO: Rollback user creation
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to create credentials")
 	}
 
 	// Create security state
-	security := NewUserSecurity(user.ID)
+	security := NewUserSecurity(createdUser.ID)
 	if err := s.securityRepository.CreateSecurity(ctx, security); err != nil {
 		s.logger.Error("Failed to create user security state",
 			logger.Field{Key: "error", Value: err.Error()},
-			logger.Field{Key: "user_id", Value: user.ID})
+			logger.Field{Key: "user_id", Value: createdUser.ID})
 		// TODO: Rollback user and credentials creation
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to create security state")
 	}
 
 	// Cache user data
-	s.cacheUser(ctx, user)
+	s.cacheUser(ctx, createdUser)
 
 	// Cache email mapping for faster email lookups
-	s.cacheEmailMapping(ctx, user.HashedEmail, user.ID)
+	s.cacheEmailMapping(ctx, createdUser.HashedEmail, createdUser.ID)
 
 	s.logger.Info("User created successfully",
-		logger.Field{Key: "user_id", Value: user.ID},
+		logger.Field{Key: "user_id", Value: createdUser.ID},
 		logger.Field{Key: "email", Value: normalizedEmail})
 	counter := s.metrics.Counter(metrics.Options{
 		Name: "user_service.create_user.success",
@@ -358,7 +358,7 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	counter.Inc()
 
 	// Use orchestrator method to build comprehensive response
-	return s.buildUserResponse(ctx, user)
+	return s.buildUserResponse(ctx, createdUser)
 }
 
 // AuthenticateUser authenticates a user with email and password.

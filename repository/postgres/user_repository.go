@@ -28,39 +28,37 @@ func NewUserRepository(pool *pgxpool.Pool) user.UserRepository {
 }
 
 // Create stores a new user in the repository
-func (r *userRepository) Create(ctx context.Context, u *user.User) error {
+func (r *userRepository) Create(ctx context.Context, req *user.CreateUserParams) (*user.User, error) {
 	query := `
 		INSERT INTO users (
 			encrypted_first_name, encrypted_last_name, encrypted_email, 
-			hashed_email, primary_auth_provider, status, created_at, updated_at, version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id`
+			hashed_email, primary_auth_provider
+		) VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, encrypted_first_name, encrypted_last_name, encrypted_email, 
+		          hashed_email, primary_auth_provider, status, created_at, updated_at, version`
 
+	var u user.User
 	err := r.pool.QueryRow(ctx, query,
-		u.ID,
-		u.FirstName,
-		u.LastName,
-		u.Email,
-		u.HashedEmail,
-		string(u.PrimaryAuthProvider),
-		int(u.Status),
-		u.CreatedAt,
-		u.UpdatedAt,
-		u.Version,
-	).Scan(&u.ID)
+		req.FirstName,
+		req.LastName,
+		req.Email,
+		req.HashedEmail,
+		string(req.PrimaryAuthProvider),
+	).Scan(&u.ID, &u.FirstName, &u.LastName, &u.Email,
+		&u.HashedEmail, &u.PrimaryAuthProvider, &u.Status, &u.CreatedAt, &u.UpdatedAt, &u.Version)
 
 	if err != nil {
 		// Check for duplicate email constraint violation using pgx error handling
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == "23505" && pgErr.ConstraintName == "users_hashed_email_key" {
-				return usererrors.NewDuplicateEmailError("user with this email already exists")
+				return nil, usererrors.NewDuplicateEmailError("user with this email already exists")
 			}
 		}
-		return fmt.Errorf("failed to create user: %w", err)
+		return nil, fmt.Errorf("failed to create user: %w", err)
 	}
 
-	return nil
+	return &u, nil
 }
 
 // GetByHashedEmail retrieves a user by their hashed email address
