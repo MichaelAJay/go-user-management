@@ -64,8 +64,14 @@ func TestMain(m *testing.M) {
 }
 
 // Test helper functions
-func createTestUser() *user.User {
-	return user.NewUser("John", "Doe", "john.doe@example.com", "hashed_email_123", auth.ProviderTypePassword)
+func createUserParams() *user.CreateUserParams {
+	return &user.CreateUserParams{
+		FirstName:           []byte("John"),
+		LastName:            []byte("Doe"),
+		Email:               []byte("john.doe@example.com"),
+		HashedEmail:         "hashed_email_123",
+		PrimaryAuthProvider: auth.ProviderTypePassword,
+	}
 }
 
 func createTestCredentials(userID string) *user.UserCredentials {
@@ -103,93 +109,93 @@ func TestUserRepository_Integration(t *testing.T) {
 	t.Run("Create and Get User", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
+		testUser := createUserParams()
 
 		// Create user
-		err := repo.Create(ctx, testUser)
+		createdUser, err := repo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Get by ID
-		retrieved, err := repo.GetByID(ctx, testUser.ID)
+		retrieved, err := repo.GetByID(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get user by ID: %v", err)
 		}
 
 		// Verify basic fields
-		if retrieved.ID != testUser.ID {
-			t.Errorf("Expected ID %s, got %s", testUser.ID, retrieved.ID)
+		if retrieved.ID != createdUser.ID {
+			t.Errorf("Expected ID %s, got %s", createdUser.ID, retrieved.ID)
 		}
-		if retrieved.HashedEmail != testUser.HashedEmail {
-			t.Errorf("Expected HashedEmail %s, got %s", testUser.HashedEmail, retrieved.HashedEmail)
+		if retrieved.HashedEmail != createdUser.HashedEmail {
+			t.Errorf("Expected HashedEmail %s, got %s", createdUser.HashedEmail, retrieved.HashedEmail)
 		}
-		if retrieved.PrimaryAuthProvider != testUser.PrimaryAuthProvider {
-			t.Errorf("Expected PrimaryAuthProvider %s, got %s", testUser.PrimaryAuthProvider, retrieved.PrimaryAuthProvider)
+		if retrieved.PrimaryAuthProvider != createdUser.PrimaryAuthProvider {
+			t.Errorf("Expected PrimaryAuthProvider %s, got %s", createdUser.PrimaryAuthProvider, retrieved.PrimaryAuthProvider)
 		}
-		if retrieved.Status != testUser.Status {
-			t.Errorf("Expected Status %v, got %v", testUser.Status, retrieved.Status)
+		if retrieved.Status != createdUser.Status {
+			t.Errorf("Expected Status %v, got %v", createdUser.Status, retrieved.Status)
 		}
 
 		// Get by hashed email
-		retrievedByEmail, err := repo.GetByHashedEmail(ctx, testUser.HashedEmail)
+		retrievedByEmail, err := repo.GetByHashedEmail(ctx, createdUser.HashedEmail)
 		if err != nil {
 			t.Fatalf("Failed to get user by hashed email: %v", err)
 		}
-		if retrievedByEmail.ID != testUser.ID {
-			t.Errorf("Expected ID %s, got %s", testUser.ID, retrievedByEmail.ID)
+		if retrievedByEmail.ID != createdUser.ID {
+			t.Errorf("Expected ID %s, got %s", createdUser.ID, retrievedByEmail.ID)
 		}
 	})
 
 	t.Run("Update User", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := repo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createUser, err := repo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Update user status
-		testUser.Status = user.UserStatusActive
-		testUser.Version++
-		testUser.UpdatedAt = time.Now()
+		createUser.Status = user.UserStatusActive
+		createUser.Version++
+		createUser.UpdatedAt = time.Now()
 
-		err = repo.Update(ctx, testUser)
+		err = repo.Update(ctx, createUser)
 		if err != nil {
 			t.Fatalf("Failed to update user: %v", err)
 		}
 
 		// Verify update
-		retrieved, err := repo.GetByID(ctx, testUser.ID)
+		retrieved, err := repo.GetByID(ctx, createUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to retrieve updated user: %v", err)
 		}
 		if retrieved.Status != user.UserStatusActive {
 			t.Errorf("Expected status %v, got %v", user.UserStatusActive, retrieved.Status)
 		}
-		if retrieved.Version != testUser.Version {
-			t.Errorf("Expected version %d, got %d", testUser.Version, retrieved.Version)
+		if retrieved.Version != createUser.Version {
+			t.Errorf("Expected version %d, got %d", createUser.Version, retrieved.Version)
 		}
 	})
 
 	t.Run("Delete User", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := repo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createUser, err := repo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Delete user
-		err = repo.Delete(ctx, testUser.ID)
+		err = repo.Delete(ctx, createUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to delete user: %v", err)
 		}
 
 		// Verify deletion
-		_, err = repo.GetByID(ctx, testUser.ID)
+		_, err = repo.GetByID(ctx, createUser.ID)
 		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 			t.Errorf("Expected user not found error after deletion, got: %v", err)
 		}
@@ -198,16 +204,15 @@ func TestUserRepository_Integration(t *testing.T) {
 	t.Run("Duplicate Email Error", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser1 := createTestUser()
-		err := repo.Create(ctx, testUser1)
+		testUser1 := createUserParams()
+		_, err := repo.Create(ctx, testUser1)
 		if err != nil {
 			t.Fatalf("Failed to create first user: %v", err)
 		}
 
 		// Try to create another user with same hashed email
-		testUser2 := createTestUser()
-		testUser2.ID = "different-id"
-		err = repo.Create(ctx, testUser2)
+		testUser2 := createUserParams()
+		_, err = repo.Create(ctx, testUser2)
 		if !errors.IsErrorType(err, errors.ErrDuplicateEmail) {
 			t.Errorf("Expected duplicate email error, got: %v", err)
 		}
@@ -216,18 +221,18 @@ func TestUserRepository_Integration(t *testing.T) {
 	t.Run("Version Mismatch Error", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := repo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createUser, err := repo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Try to update with wrong version
-		testUser.Status = user.UserStatusActive
-		testUser.Version = 999 // Wrong version
-		testUser.UpdatedAt = time.Now()
+		createUser.Status = user.UserStatusActive
+		createUser.Version = 999 // Wrong version
+		createUser.UpdatedAt = time.Now()
 
-		err = repo.Update(ctx, testUser)
+		err = repo.Update(ctx, createUser)
 		if !errors.IsErrorType(err, errors.ErrVersionMismatch) {
 			t.Errorf("Expected version mismatch error, got: %v", err)
 		}
@@ -238,10 +243,9 @@ func TestUserRepository_Integration(t *testing.T) {
 
 		// Create multiple users
 		for i := 0; i < 5; i++ {
-			testUser := createTestUser()
-			testUser.ID = fmt.Sprintf("user-%d", i)
+			testUser := createUserParams()
 			testUser.HashedEmail = fmt.Sprintf("hashed_email_%d", i)
-			err := repo.Create(ctx, testUser)
+			_, err := repo.Create(ctx, testUser)
 			if err != nil {
 				t.Fatalf("Failed to create user %d: %v", i, err)
 			}
@@ -283,12 +287,10 @@ func TestUserRepository_Integration(t *testing.T) {
 			user.UserStatusPendingVerification,
 		}
 
-		for i, status := range statuses {
-			testUser := createTestUser()
-			testUser.ID = fmt.Sprintf("stats-user-%d", i)
+		for i, _ := range statuses {
+			testUser := createUserParams()
 			testUser.HashedEmail = fmt.Sprintf("stats_email_%d", i)
-			testUser.Status = status
-			err := repo.Create(ctx, testUser)
+			_, err := repo.Create(ctx, testUser)
 			if err != nil {
 				t.Fatalf("Failed to create user %d: %v", i, err)
 			}
@@ -327,26 +329,26 @@ func TestAuthRepository_Integration(t *testing.T) {
 		cleanupTestData(t, ctx)
 
 		// Create user first
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Create credentials
-		creds := createTestCredentials(testUser.ID)
+		creds := createTestCredentials(createdUser.ID)
 		err = authRepo.CreateCredentials(ctx, creds)
 		if err != nil {
 			t.Fatalf("Failed to create credentials: %v", err)
 		}
 
 		// Get credentials
-		retrieved, err := authRepo.GetCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		retrieved, err := authRepo.GetCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if err != nil {
 			t.Fatalf("Failed to get credentials: %v", err)
 		}
-		if retrieved.UserID != testUser.ID {
-			t.Errorf("Expected UserID %s, got %s", testUser.ID, retrieved.UserID)
+		if retrieved.UserID != createdUser.ID {
+			t.Errorf("Expected UserID %s, got %s", createdUser.ID, retrieved.UserID)
 		}
 		if retrieved.ProviderType != auth.ProviderTypePassword {
 			t.Errorf("Expected ProviderType %s, got %s", auth.ProviderTypePassword, retrieved.ProviderType)
@@ -359,13 +361,13 @@ func TestAuthRepository_Integration(t *testing.T) {
 	t.Run("Update Credentials", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		creds := createTestCredentials(testUser.ID)
+		creds := createTestCredentials(createdUser.ID)
 		err = authRepo.CreateCredentials(ctx, creds)
 		if err != nil {
 			t.Fatalf("Failed to create credentials: %v", err)
@@ -382,7 +384,7 @@ func TestAuthRepository_Integration(t *testing.T) {
 		}
 
 		// Verify update
-		retrieved, err := authRepo.GetCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		retrieved, err := authRepo.GetCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if err != nil {
 			t.Fatalf("Failed to get updated credentials: %v", err)
 		}
@@ -394,27 +396,27 @@ func TestAuthRepository_Integration(t *testing.T) {
 	t.Run("Get Active Providers", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Create multiple credentials
-		passwordCreds := createTestCredentials(testUser.ID)
+		passwordCreds := createTestCredentials(createdUser.ID)
 		err = authRepo.CreateCredentials(ctx, passwordCreds)
 		if err != nil {
 			t.Fatalf("Failed to create password credentials: %v", err)
 		}
 
-		oauthCreds := user.NewUserCredentials(testUser.ID, auth.ProviderTypeOAuth, []byte("oauth_data"))
+		oauthCreds := user.NewUserCredentials(createdUser.ID, auth.ProviderTypeOAuth, []byte("oauth_data"))
 		err = authRepo.CreateCredentials(ctx, oauthCreds)
 		if err != nil {
 			t.Fatalf("Failed to create oauth credentials: %v", err)
 		}
 
 		// Get active providers
-		providers, err := authRepo.GetActiveProviders(ctx, testUser.ID)
+		providers, err := authRepo.GetActiveProviders(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get active providers: %v", err)
 		}
@@ -444,26 +446,26 @@ func TestAuthRepository_Integration(t *testing.T) {
 	t.Run("Delete Credentials", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		creds := createTestCredentials(testUser.ID)
+		creds := createTestCredentials(createdUser.ID)
 		err = authRepo.CreateCredentials(ctx, creds)
 		if err != nil {
 			t.Fatalf("Failed to create credentials: %v", err)
 		}
 
 		// Delete credentials
-		err = authRepo.DeleteCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		err = authRepo.DeleteCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if err != nil {
 			t.Fatalf("Failed to delete credentials: %v", err)
 		}
 
 		// Verify deletion
-		_, err = authRepo.GetCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		_, err = authRepo.GetCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 			t.Errorf("Expected user not found error after credential deletion, got: %v", err)
 		}
@@ -472,40 +474,40 @@ func TestAuthRepository_Integration(t *testing.T) {
 	t.Run("Expire and Revoke Credentials", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Create credentials for expiration test
-		passwordCreds := createTestCredentials(testUser.ID)
+		passwordCreds := createTestCredentials(createdUser.ID)
 		err = authRepo.CreateCredentials(ctx, passwordCreds)
 		if err != nil {
 			t.Fatalf("Failed to create password credentials: %v", err)
 		}
 
 		// Create credentials for revocation test
-		oauthCreds := user.NewUserCredentials(testUser.ID, auth.ProviderTypeOAuth, []byte("oauth_data"))
+		oauthCreds := user.NewUserCredentials(createdUser.ID, auth.ProviderTypeOAuth, []byte("oauth_data"))
 		err = authRepo.CreateCredentials(ctx, oauthCreds)
 		if err != nil {
 			t.Fatalf("Failed to create oauth credentials: %v", err)
 		}
 
 		// Expire password credentials
-		err = authRepo.ExpireCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		err = authRepo.ExpireCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if err != nil {
 			t.Fatalf("Failed to expire credentials: %v", err)
 		}
 
 		// Revoke oauth credentials
-		err = authRepo.RevokeCredentials(ctx, testUser.ID, auth.ProviderTypeOAuth)
+		err = authRepo.RevokeCredentials(ctx, createdUser.ID, auth.ProviderTypeOAuth)
 		if err != nil {
 			t.Fatalf("Failed to revoke credentials: %v", err)
 		}
 
 		// Verify expired credentials
-		expiredCreds, err := authRepo.GetCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		expiredCreds, err := authRepo.GetCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if err != nil {
 			t.Fatalf("Failed to get expired credentials: %v", err)
 		}
@@ -514,7 +516,7 @@ func TestAuthRepository_Integration(t *testing.T) {
 		}
 
 		// Verify revoked credentials
-		revokedCreds, err := authRepo.GetCredentials(ctx, testUser.ID, auth.ProviderTypeOAuth)
+		revokedCreds, err := authRepo.GetCredentials(ctx, createdUser.ID, auth.ProviderTypeOAuth)
 		if err != nil {
 			t.Fatalf("Failed to get revoked credentials: %v", err)
 		}
@@ -523,7 +525,7 @@ func TestAuthRepository_Integration(t *testing.T) {
 		}
 
 		// Verify active providers only returns active credentials
-		activeProviders, err := authRepo.GetActiveProviders(ctx, testUser.ID)
+		activeProviders, err := authRepo.GetActiveProviders(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get active providers: %v", err)
 		}
@@ -538,17 +540,16 @@ func TestAuthRepository_Integration(t *testing.T) {
 		// Create multiple users
 		var userIDs []string
 		for i := 0; i < 3; i++ {
-			testUser := createTestUser()
-			testUser.ID = fmt.Sprintf("batch-user-%d", i)
+			testUser := createUserParams()
 			testUser.HashedEmail = fmt.Sprintf("batch_email_%d", i)
-			err := userRepo.Create(ctx, testUser)
+			createdUser, err := userRepo.Create(ctx, testUser)
 			if err != nil {
 				t.Fatalf("Failed to create user %d: %v", i, err)
 			}
-			userIDs = append(userIDs, testUser.ID)
+			userIDs = append(userIDs, createdUser.ID)
 
 			// Create credentials for each user
-			creds := createTestCredentials(testUser.ID)
+			creds := createTestCredentials(createdUser.ID)
 			err = authRepo.CreateCredentials(ctx, creds)
 			if err != nil {
 				t.Fatalf("Failed to create credentials for user %d: %v", i, err)
@@ -586,26 +587,26 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		cleanupTestData(t, ctx)
 
 		// Create user first
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
 		// Create security
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
 		}
 
 		// Get security
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security: %v", err)
 		}
-		if retrieved.UserID != testUser.ID {
-			t.Errorf("Expected UserID %s, got %s", testUser.ID, retrieved.UserID)
+		if retrieved.UserID != createdUser.ID {
+			t.Errorf("Expected UserID %s, got %s", createdUser.ID, retrieved.UserID)
 		}
 		if retrieved.LoginAttempts != 0 {
 			t.Errorf("Expected LoginAttempts 0, got %d", retrieved.LoginAttempts)
@@ -618,13 +619,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 	t.Run("Update Security", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
@@ -642,7 +643,7 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		}
 
 		// Verify update
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get updated security: %v", err)
 		}
@@ -657,13 +658,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 	t.Run("Lock and Unlock Account", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
@@ -671,13 +672,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 
 		// Lock account
 		lockUntil := time.Now().Add(time.Hour)
-		err = securityRepo.LockAccount(ctx, testUser.ID, &lockUntil, "too_many_attempts")
+		err = securityRepo.LockAccount(ctx, createdUser.ID, &lockUntil, "too_many_attempts")
 		if err != nil {
 			t.Fatalf("Failed to lock account: %v", err)
 		}
 
 		// Verify lock
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get locked security: %v", err)
 		}
@@ -689,13 +690,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		}
 
 		// Unlock account
-		err = securityRepo.UnlockAccount(ctx, testUser.ID)
+		err = securityRepo.UnlockAccount(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to unlock account: %v", err)
 		}
 
 		// Verify unlock
-		retrieved, err = securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err = securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get unlocked security: %v", err)
 		}
@@ -710,26 +711,26 @@ func TestSecurityRepository_Integration(t *testing.T) {
 	t.Run("Record Login Attempts", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
 		}
 
 		// Increment login attempts
-		err = securityRepo.IncrementLoginAttempts(ctx, testUser.ID)
+		err = securityRepo.IncrementLoginAttempts(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to increment login attempts: %v", err)
 		}
 
 		// Verify increment
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security after increment: %v", err)
 		}
@@ -741,13 +742,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		}
 
 		// Record successful login
-		err = securityRepo.RecordSuccessfulLogin(ctx, testUser.ID, "192.168.1.1")
+		err = securityRepo.RecordSuccessfulLogin(ctx, createdUser.ID, "192.168.1.1")
 		if err != nil {
 			t.Fatalf("Failed to record successful login: %v", err)
 		}
 
 		// Verify successful login
-		retrieved, err = securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err = securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security after successful login: %v", err)
 		}
@@ -765,13 +766,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 	t.Run("Risk Score Management", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
@@ -782,13 +783,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 			user.RiskFactorUnknownDevice,
 			user.RiskFactorUnknownLocation,
 		}
-		err = securityRepo.UpdateRiskScore(ctx, testUser.ID, 85.0, riskFactors)
+		err = securityRepo.UpdateRiskScore(ctx, createdUser.ID, 85.0, riskFactors)
 		if err != nil {
 			t.Fatalf("Failed to update risk score: %v", err)
 		}
 
 		// Verify risk score update
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security after risk score update: %v", err)
 		}
@@ -807,21 +808,21 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		if len(highRiskUsers) != 1 {
 			t.Errorf("Expected 1 high risk user, got %d", len(highRiskUsers))
 		}
-		if highRiskUsers[0].UserID != testUser.ID {
-			t.Errorf("Expected high risk user %s, got %s", testUser.ID, highRiskUsers[0].UserID)
+		if highRiskUsers[0].UserID != createdUser.ID {
+			t.Errorf("Expected high risk user %s, got %s", createdUser.ID, highRiskUsers[0].UserID)
 		}
 	})
 
 	t.Run("Security Events Management", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
@@ -846,18 +847,18 @@ func TestSecurityRepository_Integration(t *testing.T) {
 			},
 		}
 
-		err = securityRepo.AddSecurityEvent(ctx, testUser.ID, event1)
+		err = securityRepo.AddSecurityEvent(ctx, createdUser.ID, event1)
 		if err != nil {
 			t.Fatalf("Failed to add security event 1: %v", err)
 		}
 
-		err = securityRepo.AddSecurityEvent(ctx, testUser.ID, event2)
+		err = securityRepo.AddSecurityEvent(ctx, createdUser.ID, event2)
 		if err != nil {
 			t.Fatalf("Failed to add security event 2: %v", err)
 		}
 
 		// Verify events were added
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security after adding events: %v", err)
 		}
@@ -867,7 +868,7 @@ func TestSecurityRepository_Integration(t *testing.T) {
 
 		// Test getting events since a specific time
 		since := time.Now().Add(-90 * time.Minute)
-		recentEvents, err := securityRepo.GetSecurityEvents(ctx, testUser.ID, since)
+		recentEvents, err := securityRepo.GetSecurityEvents(ctx, createdUser.ID, since)
 		if err != nil {
 			t.Fatalf("Failed to get recent security events: %v", err)
 		}
@@ -887,17 +888,15 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		var securities []*user.UserSecurity
 
 		for i := 0; i < 3; i++ {
-			testUser := createTestUser()
-			testUser.ID = fmt.Sprintf("batch-sec-user-%d", i)
-			testUser.HashedEmail = fmt.Sprintf("batch_sec_email_%d", i)
-			err := userRepo.Create(ctx, testUser)
+			testUser := createUserParams()
+			createdUser, err := userRepo.Create(ctx, testUser)
 			if err != nil {
 				t.Fatalf("Failed to create user %d: %v", i, err)
 			}
-			userIDs = append(userIDs, testUser.ID)
+			userIDs = append(userIDs, createdUser.ID)
 
 			// Create security record
-			security := createTestSecurity(testUser.ID)
+			security := createTestSecurity(createdUser.ID)
 			security.RiskScore = float64(i * 25) // 0, 25, 50
 			err = securityRepo.CreateSecurity(ctx, security)
 			if err != nil {
@@ -952,15 +951,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 
 		// Create users with different security states
 		for i := 0; i < 5; i++ {
-			testUser := createTestUser()
-			testUser.ID = fmt.Sprintf("stats-sec-user-%d", i)
-			testUser.HashedEmail = fmt.Sprintf("stats_sec_email_%d", i)
-			err := userRepo.Create(ctx, testUser)
+			testUser := createUserParams()
+			createdUser, err := userRepo.Create(ctx, testUser)
 			if err != nil {
 				t.Fatalf("Failed to create user %d: %v", i, err)
 			}
 
-			security := createTestSecurity(testUser.ID)
+			security := createTestSecurity(createdUser.ID)
 			// Vary the security states
 			switch i {
 			case 0, 1:
@@ -1015,13 +1012,13 @@ func TestSecurityRepository_Integration(t *testing.T) {
 	t.Run("Cleanup Old Events", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
@@ -1040,12 +1037,12 @@ func TestSecurityRepository_Integration(t *testing.T) {
 			IPAddress: "192.168.1.1",
 		}
 
-		err = securityRepo.AddSecurityEvent(ctx, testUser.ID, oldEvent)
+		err = securityRepo.AddSecurityEvent(ctx, createdUser.ID, oldEvent)
 		if err != nil {
 			t.Fatalf("Failed to add old event: %v", err)
 		}
 
-		err = securityRepo.AddSecurityEvent(ctx, testUser.ID, newEvent)
+		err = securityRepo.AddSecurityEvent(ctx, createdUser.ID, newEvent)
 		if err != nil {
 			t.Fatalf("Failed to add new event: %v", err)
 		}
@@ -1062,7 +1059,7 @@ func TestSecurityRepository_Integration(t *testing.T) {
 		}
 
 		// Verify only new event remains
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security after cleanup: %v", err)
 		}
@@ -1077,26 +1074,26 @@ func TestSecurityRepository_Integration(t *testing.T) {
 	t.Run("Delete Security", func(t *testing.T) {
 		cleanupTestData(t, ctx)
 
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
 		}
 
 		// Delete security
-		err = securityRepo.DeleteSecurity(ctx, testUser.ID)
+		err = securityRepo.DeleteSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to delete security: %v", err)
 		}
 
 		// Verify deletion
-		_, err = securityRepo.GetSecurity(ctx, testUser.ID)
+		_, err = securityRepo.GetSecurity(ctx, createdUser.ID)
 		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 			t.Errorf("Expected user not found error after security deletion, got: %v", err)
 		}
@@ -1118,44 +1115,44 @@ func TestCascadingOperations_Integration(t *testing.T) {
 		cleanupTestData(t, ctx)
 
 		// Create complete user with credentials and security
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		creds := createTestCredentials(testUser.ID)
+		creds := createTestCredentials(createdUser.ID)
 		err = authRepo.CreateCredentials(ctx, creds)
 		if err != nil {
 			t.Fatalf("Failed to create credentials: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
 		}
 
 		// Delete user - should cascade to credentials and security
-		err = userRepo.Delete(ctx, testUser.ID)
+		err = userRepo.Delete(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to delete user: %v", err)
 		}
 
 		// Verify user is deleted
-		_, err = userRepo.GetByID(ctx, testUser.ID)
+		_, err = userRepo.GetByID(ctx, createdUser.ID)
 		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 			t.Errorf("Expected user not found error after deletion, got: %v", err)
 		}
 
 		// Verify credentials are deleted due to cascade
-		_, err = authRepo.GetCredentials(ctx, testUser.ID, auth.ProviderTypePassword)
+		_, err = authRepo.GetCredentials(ctx, createdUser.ID, auth.ProviderTypePassword)
 		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 			t.Errorf("Expected credentials to be deleted by cascade, got: %v", err)
 		}
 
 		// Verify security is deleted due to cascade
-		_, err = securityRepo.GetSecurity(ctx, testUser.ID)
+		_, err = securityRepo.GetSecurity(ctx, createdUser.ID)
 		if !errors.IsErrorType(err, errors.ErrUserNotFound) {
 			t.Errorf("Expected security to be deleted by cascade, got: %v", err)
 		}
@@ -1181,23 +1178,20 @@ func TestPerformanceScenarios_Integration(t *testing.T) {
 
 		// Create many users
 		for i := 0; i < userCount; i++ {
-			testUser := createTestUser()
-			testUser.ID = fmt.Sprintf("perf-user-%d", i)
-			testUser.HashedEmail = fmt.Sprintf("perf_email_%d", i)
-
-			err := userRepo.Create(ctx, testUser)
+			testUser := createUserParams()
+			createdUser, err := userRepo.Create(ctx, testUser)
 			if err != nil {
 				t.Fatalf("Failed to create user %d: %v", i, err)
 			}
 
 			// Create associated records
-			creds := createTestCredentials(testUser.ID)
+			creds := createTestCredentials(createdUser.ID)
 			err = authRepo.CreateCredentials(ctx, creds)
 			if err != nil {
 				t.Fatalf("Failed to create credentials for user %d: %v", i, err)
 			}
 
-			security := createTestSecurity(testUser.ID)
+			security := createTestSecurity(createdUser.ID)
 			err = securityRepo.CreateSecurity(ctx, security)
 			if err != nil {
 				t.Fatalf("Failed to create security for user %d: %v", i, err)
@@ -1222,13 +1216,13 @@ func TestPerformanceScenarios_Integration(t *testing.T) {
 		cleanupTestData(t, ctx)
 
 		// Create a user for concurrent access
-		testUser := createTestUser()
-		err := userRepo.Create(ctx, testUser)
+		testUser := createUserParams()
+		createdUser, err := userRepo.Create(ctx, testUser)
 		if err != nil {
 			t.Fatalf("Failed to create user: %v", err)
 		}
 
-		security := createTestSecurity(testUser.ID)
+		security := createTestSecurity(createdUser.ID)
 		err = securityRepo.CreateSecurity(ctx, security)
 		if err != nil {
 			t.Fatalf("Failed to create security: %v", err)
@@ -1242,7 +1236,7 @@ func TestPerformanceScenarios_Integration(t *testing.T) {
 		for i := 0; i < goroutines; i++ {
 			go func() {
 				for j := 0; j < increments; j++ {
-					err := securityRepo.IncrementLoginAttempts(ctx, testUser.ID)
+					err := securityRepo.IncrementLoginAttempts(ctx, createdUser.ID)
 					if err != nil {
 						errors <- err
 						return
@@ -1260,7 +1254,7 @@ func TestPerformanceScenarios_Integration(t *testing.T) {
 		}
 
 		// Verify final count
-		retrieved, err := securityRepo.GetSecurity(ctx, testUser.ID)
+		retrieved, err := securityRepo.GetSecurity(ctx, createdUser.ID)
 		if err != nil {
 			t.Fatalf("Failed to get security after concurrent increments: %v", err)
 		}
