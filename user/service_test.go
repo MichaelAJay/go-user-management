@@ -172,6 +172,10 @@ func (m *MockUserRepository) GetUserStats(ctx context.Context) (*UserStats, erro
 	return stats, nil
 }
 
+// MockSecurityRepository implements UserSecurityRepository for testing
+
+// MockAuthRepository implements AuthenticationRepository for testing
+
 // MockCache implements cache.Cache for testing
 type MockCache struct {
 	data         map[string]any // Changed from []byte to any to handle User objects
@@ -597,8 +601,8 @@ func NewServiceDependencies() *ServiceDependencies {
 
 	return &ServiceDependencies{
 		UserRepo:     NewMockUserRepository(),
-		AuthRepo:     NewInMemoryAuthRepository(),
-		SecurityRepo: NewInMemorySecurityRepository(),
+		AuthRepo:     NewMockAuthRepository(),
+		SecurityRepo: NewMockSecurityRepository(),
 		Encrypter:    &MockEncrypter{},
 		Logger:       &MockLogger{},
 		Cache:        NewMockCache(),
@@ -704,8 +708,8 @@ func TestNewUserService_NilDependencies(t *testing.T) {
 	// doesn't validate for nil (following Go's fail-fast philosophy)
 	service := NewUserService(
 		nil, // userRepository
-		NewInMemoryAuthRepository(),
-		NewInMemorySecurityRepository(),
+		NewMockAuthRepository(),
+		NewMockSecurityRepository(),
 		&MockEncrypter{},
 		&MockLogger{},
 		NewMockCache(),

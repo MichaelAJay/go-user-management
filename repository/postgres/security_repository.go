@@ -29,52 +29,31 @@ func NewSecurityRepository(pool *pgxpool.Pool) user.UserSecurityRepository {
 }
 
 // CreateSecurity creates a new security record for a user
-func (r *securityRepository) CreateSecurity(ctx context.Context, security *user.UserSecurity) error {
-	// Serialize JSON fields
-	riskFactorsJSON, err := json.Marshal(security.RiskFactors)
-	if err != nil {
-		return fmt.Errorf("failed to marshal risk factors: %w", err)
-	}
-
-	securityEventsJSON, err := json.Marshal(security.SecurityEvents)
-	if err != nil {
-		return fmt.Errorf("failed to marshal security events: %w", err)
-	}
-
+func (r *securityRepository) CreateSecurity(ctx context.Context, req *user.CreateSecurityParams) (*user.UserSecurity, error) {
 	query := `
 		INSERT INTO user_security (
-			user_id, login_attempts, last_failed_at, locked_until, lock_reason,
-			last_login_at, last_login_ip, total_login_attempts, successful_logins,
-			risk_score, risk_factors, security_events, mfa_enabled, mfa_backup_codes,
-			created_at, updated_at, version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`
+			user_id
+		) VALUES ($1)
+		RETURNING user_id, login_attempts, last_failed_at, locked_until, lock_reason,
+			   last_login_at, last_login_ip, total_login_attempts, successful_logins,
+			   risk_score, risk_factors, security_events, mfa_enabled, mfa_backup_codes,
+			   created_at, updated_at, version`
 
-	var lastLoginIP *net.IP
-	if security.LastLoginIP != "" {
-		ip := net.ParseIP(security.LastLoginIP)
-		if ip != nil {
-			lastLoginIP = &ip
-		}
-	}
-
-	_, err = r.pool.Exec(ctx, query,
-		security.UserID,
-		security.LoginAttempts,
-		security.LastFailedAt,
-		security.LockedUntil,
-		security.LockReason,
-		security.LastLoginAt,
-		lastLoginIP,
-		security.TotalLoginAttempts,
-		security.SuccessfulLogins,
-		security.RiskScore,
-		riskFactorsJSON,
-		securityEventsJSON,
-		security.MFAEnabled,
-		security.MFABackupCodes,
-		security.CreatedAt,
-		security.UpdatedAt,
-		security.Version,
+	security := &user.UserSecurity{}
+	err := r.pool.QueryRow(ctx, query,
+		req.UserID,
+	).Scan(
+		&security.UserID,
+		&security.LoginAttempts,
+		&security.LastFailedAt,
+		&security.LockedUntil,
+		&security.LockReason,
+		&security.LastLoginAt,
+		&security.LastLoginIP,
+		&security.TotalLoginAttempts,
+		&security.SuccessfulLogins,
+		&security.RiskScore,
+		&security.RiskFactors,
 	)
 
 	if err != nil {
@@ -82,13 +61,13 @@ func (r *securityRepository) CreateSecurity(ctx context.Context, security *user.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == "23505" && pgErr.ConstraintName == "user_security_pkey" {
-				return usererrors.NewAppError(usererrors.CodeDuplicateEmail, "security record already exists for this user")
+				return nil, usererrors.NewAppError(usererrors.CodeDuplicateEmail, "security record already exists for this user")
 			}
 		}
-		return fmt.Errorf("failed to create security record: %w", err)
+		return nil, fmt.Errorf("failed to create security record: %w", err)
 	}
 
-	return nil
+	return security, nil
 }
 
 // GetSecurity retrieves security information for a user

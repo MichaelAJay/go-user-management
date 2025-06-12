@@ -8,14 +8,6 @@ import (
 	"github.com/MichaelAJay/go-user-management/auth"
 )
 
-type CreateUserParams struct {
-	FirstName           []byte
-	LastName            []byte
-	Email               []byte
-	HashedEmail         string
-	PrimaryAuthProvider auth.ProviderType
-}
-
 // UserRepository defines the interface for user data storage operations.
 // This interface follows the Repository pattern, allowing different storage
 // implementations (PostgreSQL, MySQL, MongoDB, etc.) to be used without
@@ -77,13 +69,21 @@ type UserRepository interface {
 	GetUserStats(ctx context.Context) (*UserStats, error)
 }
 
+type CreateUserParams struct {
+	FirstName           []byte
+	LastName            []byte
+	Email               []byte
+	HashedEmail         string
+	PrimaryAuthProvider auth.ProviderType
+}
+
 // AuthenticationRepository manages credential storage and retrieval.
 // This repository is focused solely on authentication data CRUD operations.
 // Following the Single Responsibility Principle, this repository handles
 // only credential-related data operations.
 type AuthenticationRepository interface {
 	// Credential management - Core CRUD operations
-	CreateCredentials(ctx context.Context, creds *UserCredentials) error
+	CreateCredentials(ctx context.Context, req *CreateCredentialsParams) (*UserCredentials, error)
 	GetCredentials(ctx context.Context, userID string, providerType auth.ProviderType) (*UserCredentials, error)
 	UpdateCredentials(ctx context.Context, creds *UserCredentials) error
 	DeleteCredentials(ctx context.Context, userID string, providerType auth.ProviderType) error
@@ -108,12 +108,18 @@ type AuthenticationRepository interface {
 	RecordFailedAttempt(ctx context.Context, userID string, providerType auth.ProviderType) error
 }
 
+type CreateCredentialsParams struct {
+	UserID            string
+	ProviderType      auth.ProviderType
+	EncryptedAuthData []byte
+}
+
 // UserSecurityRepository manages security state separate from profile data.
 // This repository focuses solely on security-related operations like login tracking,
 // account locking, risk assessment, and security event management.
 type UserSecurityRepository interface {
 	// Security state management - Core CRUD operations
-	CreateSecurity(ctx context.Context, security *UserSecurity) error
+	CreateSecurity(ctx context.Context, security *CreateSecurityParams) (*UserSecurity, error)
 	GetSecurity(ctx context.Context, userID string) (*UserSecurity, error)
 	UpdateSecurity(ctx context.Context, security *UserSecurity) error
 	DeleteSecurity(ctx context.Context, userID string) error
@@ -143,6 +149,10 @@ type UserSecurityRepository interface {
 	// Maintenance operations
 	CleanupOldEvents(ctx context.Context, before time.Time) (int64, error)
 	GetSecurityStats(ctx context.Context) (*SecurityStats, error)
+}
+
+type CreateSecurityParams struct {
+	UserID string
 }
 
 // UserStats represents aggregated statistics about users in the system.

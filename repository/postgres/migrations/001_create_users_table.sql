@@ -14,9 +14,6 @@ CREATE TABLE IF NOT EXISTS users (
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_users_hashed_email ON users(hashed_email);
-CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
-CREATE INDEX IF NOT EXISTS idx_users_created_at ON users(created_at);
-CREATE INDEX IF NOT EXISTS idx_users_primary_auth_provider ON users(primary_auth_provider);
 
 -- repository/postgres/migrations/002_create_user_credentials_table.sql
 
@@ -39,10 +36,6 @@ CREATE TABLE IF NOT EXISTS user_credentials (
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_credentials_user_id ON user_credentials(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_credentials_provider_type ON user_credentials(provider_type);
-CREATE INDEX IF NOT EXISTS idx_user_credentials_status ON user_credentials(status);
-CREATE INDEX IF NOT EXISTS idx_user_credentials_expires_at ON user_credentials(expires_at);
-CREATE INDEX IF NOT EXISTS idx_user_credentials_last_used_at ON user_credentials(last_used_at);
 
 -- repository/postgres/migrations/003_create_user_security_table.sql
 
@@ -71,14 +64,7 @@ CREATE TABLE IF NOT EXISTS user_security (
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_user_security_locked_until ON user_security(locked_until);
-CREATE INDEX IF NOT EXISTS idx_user_security_last_login_at ON user_security(last_login_at);
-CREATE INDEX IF NOT EXISTS idx_user_security_risk_score ON user_security(risk_score);
 CREATE INDEX IF NOT EXISTS idx_user_security_mfa_enabled ON user_security(mfa_enabled);
-CREATE INDEX IF NOT EXISTS idx_user_security_last_failed_at ON user_security(last_failed_at);
-
--- GIN index for JSONB columns
-CREATE INDEX IF NOT EXISTS idx_user_security_risk_factors ON user_security USING GIN(risk_factors);
-CREATE INDEX IF NOT EXISTS idx_user_security_events ON user_security USING GIN(security_events);
 
 -- repository/postgres/migrations/004_add_constraints_and_checks.sql
 
@@ -116,21 +102,5 @@ ALTER TABLE user_security ADD CONSTRAINT check_risk_score_range
 -- repository/postgres/migrations/005_create_indexes_for_queries.sql
 
 -- Additional indexes for common query patterns
-CREATE INDEX IF NOT EXISTS idx_users_compound_status_created 
-    ON users(status, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_user_credentials_compound_user_status 
-    ON user_credentials(user_id, status);
-
-CREATE INDEX IF NOT EXISTS idx_user_security_compound_risk 
-    ON user_security(risk_score DESC, last_login_at DESC);
-
--- Partial indexes for specific scenarios
-CREATE INDEX IF NOT EXISTS idx_users_active_only 
-    ON users(created_at DESC) WHERE status = 0;
-
 CREATE INDEX IF NOT EXISTS idx_user_security_locked_only 
     ON user_security(locked_until) WHERE locked_until IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_user_security_high_risk 
-    ON user_security(risk_score DESC, user_id) WHERE risk_score >= 75.0;

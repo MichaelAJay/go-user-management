@@ -28,39 +28,34 @@ func NewAuthRepository(pool *pgxpool.Pool) user.AuthenticationRepository {
 }
 
 // CreateCredentials stores new credentials for a user and provider
-func (r *authRepository) CreateCredentials(ctx context.Context, creds *user.UserCredentials) error {
+func (r *authRepository) CreateCredentials(ctx context.Context, req *user.CreateCredentialsParams) (*user.UserCredentials, error) {
 	query := `
 		INSERT INTO user_credentials (
-			user_id, provider_type, encrypted_auth_data, status, 
-			created_at, updated_at, expires_at, last_used_at, 
-			failed_attempts, version
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
+			user_id, provider_type, encrypted_auth_data
+		) VALUES ($1, $2, $3)
+		RETURNING user_id, provider_type, encrypted_auth_data, status,
+			   created_at, updated_at, expires_at, last_used_at,
+			   failed_attempts, version`
 
-	_, err := r.pool.Exec(ctx, query,
-		creds.UserID,
-		string(creds.ProviderType),
-		creds.EncryptedAuthData,
-		int(creds.Status),
-		creds.CreatedAt,
-		creds.UpdatedAt,
-		creds.ExpiresAt,
-		creds.LastUsedAt,
-		creds.FailedAttempts,
-		creds.Version,
-	)
+	creds := &user.UserCredentials{}
+	err := r.pool.QueryRow(ctx, query,
+		req.UserID,
+		string(req.ProviderType),
+		req.EncryptedAuthData,
+	).Scan(&creds.UserID, &creds.ProviderType, &creds.EncryptedAuthData, &creds.Status, &creds.CreatedAt, &creds.UpdatedAt, &creds.ExpiresAt, &creds.LastUsedAt, &creds.FailedAttempts, &creds.Version)
 
 	if err != nil {
 		// Check for duplicate credentials constraint violation
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == "23505" && pgErr.ConstraintName == "user_credentials_pkey" {
-				return usererrors.NewAppError(usererrors.CodeDuplicateEmail, "credentials already exist for this user and provider")
+				return nil, usererrors.NewAppError(usererrors.CodeDuplicateEmail, "credentials already exist for this user and provider")
 			}
 		}
-		return fmt.Errorf("failed to create credentials: %w", err)
+		return nil, fmt.Errorf("failed to create credentials: %w", err)
 	}
 
-	return nil
+	return creds, nil
 }
 
 // GetCredentials retrieves credentials for a user and provider
