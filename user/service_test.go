@@ -173,8 +173,582 @@ func (m *MockUserRepository) GetUserStats(ctx context.Context) (*UserStats, erro
 }
 
 // MockSecurityRepository implements UserSecurityRepository for testing
+type MockSecurityRepository struct {
+	securities   map[string]*UserSecurity
+	events       map[string][]SecurityEvent
+	shouldFail   bool
+	failOnMethod string
+}
+
+func NewMockSecurityRepository() *MockSecurityRepository {
+	return &MockSecurityRepository{
+		securities: make(map[string]*UserSecurity),
+		events:     make(map[string][]SecurityEvent),
+	}
+}
+
+func (m *MockSecurityRepository) SetShouldFail(method string) {
+	m.shouldFail = true
+	m.failOnMethod = method
+}
+
+func (m *MockSecurityRepository) AddSecurity(security *UserSecurity) {
+	m.securities[security.UserID] = security
+}
+
+func (m *MockSecurityRepository) CreateSecurity(ctx context.Context, params *CreateSecurityParams) (*UserSecurity, error) {
+	if m.shouldFail && m.failOnMethod == "CreateSecurity" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "create security failed")
+	}
+
+	now := time.Now()
+	security := &UserSecurity{
+		UserID:             params.UserID,
+		LoginAttempts:      0,
+		LastFailedAt:       nil,
+		LockedUntil:        nil,
+		LockReason:         "",
+		LastLoginAt:        nil,
+		LastLoginIP:        "",
+		TotalLoginAttempts: 0,
+		SuccessfulLogins:   0,
+		RiskScore:          0.0,
+		RiskFactors:        []RiskFactor{},
+		SecurityEvents:     []SecurityEvent{},
+		MFAEnabled:         false,
+		MFABackupCodes:     nil,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		Version:            1,
+	}
+
+	m.AddSecurity(security)
+	return security, nil
+}
+
+func (m *MockSecurityRepository) GetSecurity(ctx context.Context, userID string) (*UserSecurity, error) {
+	if m.shouldFail && m.failOnMethod == "GetSecurity" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get security failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		return security.Clone(), nil
+	}
+	return nil, errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) UpdateSecurity(ctx context.Context, security *UserSecurity) error {
+	if m.shouldFail && m.failOnMethod == "UpdateSecurity" {
+		return errors.NewAppError(errors.CodeInternalError, "update security failed")
+	}
+
+	if _, exists := m.securities[security.UserID]; !exists {
+		return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+	}
+
+	security.UpdatedAt = time.Now()
+	security.Version++
+	m.securities[security.UserID] = security.Clone()
+	return nil
+}
+
+func (m *MockSecurityRepository) DeleteSecurity(ctx context.Context, userID string) error {
+	if m.shouldFail && m.failOnMethod == "DeleteSecurity" {
+		return errors.NewAppError(errors.CodeInternalError, "delete security failed")
+	}
+
+	if _, exists := m.securities[userID]; exists {
+		delete(m.securities, userID)
+		delete(m.events, userID)
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) IncrementLoginAttempts(ctx context.Context, userID string) error {
+	if m.shouldFail && m.failOnMethod == "IncrementLoginAttempts" {
+		return errors.NewAppError(errors.CodeInternalError, "increment login attempts failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		security.LoginAttempts++
+		security.UpdatedAt = time.Now()
+		security.Version++
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) ResetLoginAttempts(ctx context.Context, userID string) error {
+	if m.shouldFail && m.failOnMethod == "ResetLoginAttempts" {
+		return errors.NewAppError(errors.CodeInternalError, "reset login attempts failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		security.LoginAttempts = 0
+		security.UpdatedAt = time.Now()
+		security.Version++
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) RecordSuccessfulLogin(ctx context.Context, userID string, ipAddress string) error {
+	if m.shouldFail && m.failOnMethod == "RecordSuccessfulLogin" {
+		return errors.NewAppError(errors.CodeInternalError, "record successful login failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		now := time.Now()
+		security.LoginAttempts = 0
+		security.LastLoginAt = &now
+		security.LastLoginIP = ipAddress
+		security.UpdatedAt = now
+		security.Version++
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) LockAccount(ctx context.Context, userID string, until *time.Time, reason string) error {
+	if m.shouldFail && m.failOnMethod == "LockAccount" {
+		return errors.NewAppError(errors.CodeInternalError, "lock account failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		security.LockedUntil = until
+		security.LockReason = reason
+		security.UpdatedAt = time.Now()
+		security.Version++
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) UnlockAccount(ctx context.Context, userID string) error {
+	if m.shouldFail && m.failOnMethod == "UnlockAccount" {
+		return errors.NewAppError(errors.CodeInternalError, "unlock account failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		security.LockedUntil = nil
+		security.LockReason = ""
+		security.UpdatedAt = time.Now()
+		security.Version++
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) GetLockedAccounts(ctx context.Context) ([]*UserSecurity, error) {
+	if m.shouldFail && m.failOnMethod == "GetLockedAccounts" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get locked accounts failed")
+	}
+
+	var locked []*UserSecurity
+	now := time.Now()
+	for _, security := range m.securities {
+		if security.LockedUntil != nil && security.LockedUntil.After(now) {
+			locked = append(locked, security.Clone())
+		}
+	}
+	return locked, nil
+}
+
+func (m *MockSecurityRepository) UpdateRiskScore(ctx context.Context, userID string, score float64, factors []RiskFactor) error {
+	if m.shouldFail && m.failOnMethod == "UpdateRiskScore" {
+		return errors.NewAppError(errors.CodeInternalError, "update risk score failed")
+	}
+
+	if security, exists := m.securities[userID]; exists {
+		security.RiskScore = score
+		security.RiskFactors = factors
+		security.UpdatedAt = time.Now()
+		security.Version++
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+}
+
+func (m *MockSecurityRepository) GetHighRiskUsers(ctx context.Context, threshold float64) ([]*UserSecurity, error) {
+	if m.shouldFail && m.failOnMethod == "GetHighRiskUsers" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get high risk users failed")
+	}
+
+	var highRisk []*UserSecurity
+	for _, security := range m.securities {
+		if security.RiskScore >= threshold {
+			highRisk = append(highRisk, security.Clone())
+		}
+	}
+	return highRisk, nil
+}
+
+func (m *MockSecurityRepository) AddSecurityEvent(ctx context.Context, userID string, event SecurityEvent) error {
+	if m.shouldFail && m.failOnMethod == "AddSecurityEvent" {
+		return errors.NewAppError(errors.CodeInternalError, "add security event failed")
+	}
+
+	if _, exists := m.securities[userID]; !exists {
+		return errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+	}
+
+	if m.events[userID] == nil {
+		m.events[userID] = make([]SecurityEvent, 0)
+	}
+	m.events[userID] = append(m.events[userID], event)
+	return nil
+}
+
+func (m *MockSecurityRepository) GetSecurityEvents(ctx context.Context, userID string, since time.Time) ([]SecurityEvent, error) {
+	if m.shouldFail && m.failOnMethod == "GetSecurityEvents" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get security events failed")
+	}
+
+	if _, exists := m.securities[userID]; !exists {
+		return nil, errors.NewAppError(errors.CodeUserNotFound, "user security not found")
+	}
+
+	events := m.events[userID]
+	var filtered []SecurityEvent
+	for _, event := range events {
+		if event.Timestamp.After(since) || event.Timestamp.Equal(since) {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered, nil
+}
+
+func (m *MockSecurityRepository) GetSecurityBatch(ctx context.Context, userIDs []string) (map[string]*UserSecurity, error) {
+	if m.shouldFail && m.failOnMethod == "GetSecurityBatch" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get security batch failed")
+	}
+
+	result := make(map[string]*UserSecurity)
+	for _, userID := range userIDs {
+		if security, exists := m.securities[userID]; exists {
+			result[userID] = security.Clone()
+		}
+	}
+	return result, nil
+}
+
+func (m *MockSecurityRepository) UpdateSecurityBatch(ctx context.Context, securities []*UserSecurity) error {
+	if m.shouldFail && m.failOnMethod == "UpdateSecurityBatch" {
+		return errors.NewAppError(errors.CodeInternalError, "update security batch failed")
+	}
+
+	for _, security := range securities {
+		if _, exists := m.securities[security.UserID]; !exists {
+			return errors.NewAppError(errors.CodeUserNotFound, "user security not found: "+security.UserID)
+		}
+		security.UpdatedAt = time.Now()
+		security.Version++
+		m.securities[security.UserID] = security.Clone()
+	}
+	return nil
+}
+
+func (m *MockSecurityRepository) CleanupOldEvents(ctx context.Context, before time.Time) (int64, error) {
+	if m.shouldFail && m.failOnMethod == "CleanupOldEvents" {
+		return 0, errors.NewAppError(errors.CodeInternalError, "cleanup old events failed")
+	}
+
+	var cleaned int64
+	for userID, events := range m.events {
+		var remaining []SecurityEvent
+		for _, event := range events {
+			if event.Timestamp.After(before) {
+				remaining = append(remaining, event)
+			} else {
+				cleaned++
+			}
+		}
+		m.events[userID] = remaining
+	}
+	return cleaned, nil
+}
+
+func (m *MockSecurityRepository) GetSecurityStats(ctx context.Context) (*SecurityStats, error) {
+	if m.shouldFail && m.failOnMethod == "GetSecurityStats" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get security stats failed")
+	}
+
+	var locked, highRisk int64
+	var totalRisk float64
+	now := time.Now()
+
+	for _, security := range m.securities {
+		if security.LockedUntil != nil && security.LockedUntil.After(now) {
+			locked++
+		}
+		if security.RiskScore >= 0.7 { // Arbitrary threshold for high risk
+			highRisk++
+		}
+		totalRisk += security.RiskScore
+	}
+
+	avgRisk := 0.0
+	if len(m.securities) > 0 {
+		avgRisk = totalRisk / float64(len(m.securities))
+	}
+
+	return &SecurityStats{
+		TotalUsers:           int64(len(m.securities)),
+		LockedUsers:          locked,
+		HighRiskUsers:        highRisk,
+		RecentFailedAttempts: 0, // Mock doesn't track recent failures
+		AverageRiskScore:     avgRisk,
+		UpdatedAt:            now,
+	}, nil
+}
 
 // MockAuthRepository implements AuthenticationRepository for testing
+type MockAuthRepository struct {
+	credentials  map[string]map[auth.ProviderType]*UserCredentials // userID -> providerType -> credentials
+	shouldFail   bool
+	failOnMethod string
+}
+
+func NewMockAuthRepository() *MockAuthRepository {
+	return &MockAuthRepository{
+		credentials: make(map[string]map[auth.ProviderType]*UserCredentials),
+	}
+}
+
+func (m *MockAuthRepository) SetShouldFail(method string) {
+	m.shouldFail = true
+	m.failOnMethod = method
+}
+
+func (m *MockAuthRepository) AddCredentials(creds *UserCredentials) {
+	if m.credentials[creds.UserID] == nil {
+		m.credentials[creds.UserID] = make(map[auth.ProviderType]*UserCredentials)
+	}
+	m.credentials[creds.UserID][creds.ProviderType] = creds.Clone()
+}
+
+func (m *MockAuthRepository) CreateCredentials(ctx context.Context, params *CreateCredentialsParams) (*UserCredentials, error) {
+	if m.shouldFail && m.failOnMethod == "CreateCredentials" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "create credentials failed")
+	}
+
+	// Check if credentials already exist
+	if userCreds, exists := m.credentials[params.UserID]; exists {
+		if _, providerExists := userCreds[params.ProviderType]; providerExists {
+			return nil, errors.NewAppError(errors.CodeDuplicateEmail, "credentials already exist for this provider")
+		}
+	}
+
+	now := time.Now()
+	creds := &UserCredentials{
+		UserID:            params.UserID,
+		ProviderType:      params.ProviderType,
+		EncryptedAuthData: params.EncryptedAuthData,
+		Status:            CredentialStatusActive,
+		ExpiresAt:         nil,
+		LastUsedAt:        nil,
+		FailedAttempts:    0,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+		Version:           1,
+	}
+
+	m.AddCredentials(creds)
+	return creds, nil
+}
+
+func (m *MockAuthRepository) GetCredentials(ctx context.Context, userID string, providerType auth.ProviderType) (*UserCredentials, error) {
+	if m.shouldFail && m.failOnMethod == "GetCredentials" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get credentials failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		if creds, providerExists := userCreds[providerType]; providerExists {
+			return creds.Clone(), nil
+		}
+	}
+	return nil, errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
+
+func (m *MockAuthRepository) UpdateCredentials(ctx context.Context, creds *UserCredentials) error {
+	if m.shouldFail && m.failOnMethod == "UpdateCredentials" {
+		return errors.NewAppError(errors.CodeInternalError, "update credentials failed")
+	}
+
+	if userCreds, exists := m.credentials[creds.UserID]; exists {
+		if _, providerExists := userCreds[creds.ProviderType]; providerExists {
+			creds.UpdatedAt = time.Now()
+			creds.Version++
+			userCreds[creds.ProviderType] = creds.Clone()
+			return nil
+		}
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
+
+func (m *MockAuthRepository) DeleteCredentials(ctx context.Context, userID string, providerType auth.ProviderType) error {
+	if m.shouldFail && m.failOnMethod == "DeleteCredentials" {
+		return errors.NewAppError(errors.CodeInternalError, "delete credentials failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		if _, providerExists := userCreds[providerType]; providerExists {
+			delete(userCreds, providerType)
+			if len(userCreds) == 0 {
+				delete(m.credentials, userID)
+			}
+			return nil
+		}
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
+
+func (m *MockAuthRepository) GetAllCredentials(ctx context.Context, userID string) ([]*UserCredentials, error) {
+	if m.shouldFail && m.failOnMethod == "GetAllCredentials" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get all credentials failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		var result []*UserCredentials
+		for _, creds := range userCreds {
+			result = append(result, creds.Clone())
+		}
+		return result, nil
+	}
+	return []*UserCredentials{}, nil
+}
+
+func (m *MockAuthRepository) GetActiveProviders(ctx context.Context, userID string) ([]auth.ProviderType, error) {
+	if m.shouldFail && m.failOnMethod == "GetActiveProviders" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get active providers failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		var providers []auth.ProviderType
+		for providerType, creds := range userCreds {
+			if creds.Status == CredentialStatusActive && (creds.ExpiresAt == nil || creds.ExpiresAt.After(time.Now())) {
+				providers = append(providers, providerType)
+			}
+		}
+		return providers, nil
+	}
+	return []auth.ProviderType{}, nil
+}
+
+func (m *MockAuthRepository) GetCredentialsBatch(ctx context.Context, userIDs []string, providerType auth.ProviderType) (map[string]*UserCredentials, error) {
+	if m.shouldFail && m.failOnMethod == "GetCredentialsBatch" {
+		return nil, errors.NewAppError(errors.CodeInternalError, "get credentials batch failed")
+	}
+
+	result := make(map[string]*UserCredentials)
+	for _, userID := range userIDs {
+		if userCreds, exists := m.credentials[userID]; exists {
+			if creds, providerExists := userCreds[providerType]; providerExists {
+				result[userID] = creds.Clone()
+			}
+		}
+	}
+	return result, nil
+}
+
+func (m *MockAuthRepository) ExpireCredentials(ctx context.Context, userID string, providerType auth.ProviderType) error {
+	if m.shouldFail && m.failOnMethod == "ExpireCredentials" {
+		return errors.NewAppError(errors.CodeInternalError, "expire credentials failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		if creds, providerExists := userCreds[providerType]; providerExists {
+			now := time.Now()
+			creds.ExpiresAt = &now
+			creds.UpdatedAt = now
+			creds.Version++
+			return nil
+		}
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
+
+func (m *MockAuthRepository) RevokeCredentials(ctx context.Context, userID string, providerType auth.ProviderType) error {
+	if m.shouldFail && m.failOnMethod == "RevokeCredentials" {
+		return errors.NewAppError(errors.CodeInternalError, "revoke credentials failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		if creds, providerExists := userCreds[providerType]; providerExists {
+			creds.Status = CredentialStatusRevoked
+			creds.UpdatedAt = time.Now()
+			creds.Version++
+			return nil
+		}
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
+
+func (m *MockAuthRepository) DeleteExpiredCredentials(ctx context.Context, before time.Time) (int64, error) {
+	if m.shouldFail && m.failOnMethod == "DeleteExpiredCredentials" {
+		return 0, errors.NewAppError(errors.CodeInternalError, "delete expired credentials failed")
+	}
+
+	var deleted int64
+	for userID, userCreds := range m.credentials {
+		for providerType, creds := range userCreds {
+			if creds.ExpiresAt != nil && creds.ExpiresAt.Before(before) {
+				delete(userCreds, providerType)
+				deleted++
+			}
+		}
+		if len(userCreds) == 0 {
+			delete(m.credentials, userID)
+		}
+	}
+	return deleted, nil
+}
+
+func (m *MockAuthRepository) DeleteUserCredentials(ctx context.Context, userID string) error {
+	if m.shouldFail && m.failOnMethod == "DeleteUserCredentials" {
+		return errors.NewAppError(errors.CodeInternalError, "delete user credentials failed")
+	}
+
+	if _, exists := m.credentials[userID]; exists {
+		delete(m.credentials, userID)
+		return nil
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "user credentials not found")
+}
+
+func (m *MockAuthRepository) RecordCredentialUsage(ctx context.Context, userID string, providerType auth.ProviderType) error {
+	if m.shouldFail && m.failOnMethod == "RecordCredentialUsage" {
+		return errors.NewAppError(errors.CodeInternalError, "record credential usage failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		if creds, providerExists := userCreds[providerType]; providerExists {
+			now := time.Now()
+			creds.LastUsedAt = &now
+			creds.UpdatedAt = now
+			creds.Version++
+			return nil
+		}
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
+
+func (m *MockAuthRepository) RecordFailedAttempt(ctx context.Context, userID string, providerType auth.ProviderType) error {
+	if m.shouldFail && m.failOnMethod == "RecordFailedAttempt" {
+		return errors.NewAppError(errors.CodeInternalError, "record failed attempt failed")
+	}
+
+	if userCreds, exists := m.credentials[userID]; exists {
+		if creds, providerExists := userCreds[providerType]; providerExists {
+			creds.FailedAttempts++
+			creds.UpdatedAt = time.Now()
+			creds.Version++
+			return nil
+		}
+	}
+	return errors.NewAppError(errors.CodeUserNotFound, "credentials not found")
+}
 
 // MockCache implements cache.Cache for testing
 type MockCache struct {

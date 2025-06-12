@@ -324,8 +324,12 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 		return nil, errors.NewAppError(errors.CodeInternalError, "Failed to encrypt auth data")
 	}
 
-	credentials := NewUserCredentials(createdUser.ID, req.AuthenticationProvider, encryptedAuthData)
-	if err := s.authRepository.CreateCredentials(ctx, credentials); err != nil {
+	credentials := &CreateCredentialsParams{
+		UserID:            createdUser.ID,
+		ProviderType:      req.AuthenticationProvider,
+		EncryptedAuthData: encryptedAuthData,
+	}
+	if _, err := s.authRepository.CreateCredentials(ctx, credentials); err != nil {
 		s.logger.Error("Failed to create user credentials",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: createdUser.ID})
@@ -334,8 +338,10 @@ func (s *userService) CreateUser(ctx context.Context, req *CreateUserRequest) (*
 	}
 
 	// Create security state
-	security := NewUserSecurity(createdUser.ID)
-	if err := s.securityRepository.CreateSecurity(ctx, security); err != nil {
+	security := &CreateSecurityParams{
+		UserID: createdUser.ID,
+	}
+	if _, err := s.securityRepository.CreateSecurity(ctx, security); err != nil {
 		s.logger.Error("Failed to create user security state",
 			logger.Field{Key: "error", Value: err.Error()},
 			logger.Field{Key: "user_id", Value: createdUser.ID})
