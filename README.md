@@ -1,218 +1,285 @@
-# Go User Management Package
+# Go User Management
 
-A comprehensive, production-ready user management package for Go applications that provides core user authentication and session management functionality. This package is designed to be storage-agnostic, highly testable, and suitable for concurrent web applications.
+A production-ready, security-first user management library for Go web applications. This module provides comprehensive user authentication, session management, and account security features with pluggable storage backends.
 
-## Features
+## Overview
 
-- **Security First**: All PII encrypted at rest, secure password hashing with Argon2id, robust session management
-- **Storage Agnostic**: Uses Repository pattern with dependency injection to support any storage backend
-- **Concurrent Safe**: All operations designed for high-concurrency web applications
-- **Comprehensive Error Handling**: Structured errors with codes for proper API responses
-- **Testable**: Mock-friendly interfaces with comprehensive test coverage
-- **Performance Optimized**: Caching strategies and efficient database operations
+Go User Management is designed as a turnkey solution for applications requiring robust user management capabilities. It follows Go best practices with domain-driven design, interface segregation, and security-first principles.
+
+### Key Features
+
+- **Security-First Design**: PII encryption at rest, Argon2id password hashing, optimistic locking
+- **Storage Agnostic**: Repository pattern with pluggable backends (PostgreSQL primary target)
+- **Pluggable Authentication**: Interface-based system supporting multiple authentication providers
+- **Comprehensive Error Handling**: Structured errors with security context
+- **Production Ready**: Logging, metrics, monitoring, and audit trail support
+- **Go Idioms**: Small interfaces, dependency injection, explicit error handling
 
 ## Architecture
 
-The package follows Go best practices and is organized into several key components:
+### Core Components
 
-### Core Entities
-- **User**: Main user entity with encrypted PII fields
-- **Session**: User session management with metadata tracking
-- **Token**: Verification and reset token management
-- **Errors**: Comprehensive error handling with structured error codes
+```
+go-user-management/
+├── user/                    # Core user domain
+│   ├── user.go             # User entity with business logic
+│   ├── repository.go       # Storage-agnostic interfaces
+│   ├── service.go          # Business logic with encryption
+│   ├── errors.go           # Structured error handling
+│   └── requests.go         # Request/response DTOs
+├── auth/                   # Authentication framework (planned)
+├── repository/             # Storage implementations (planned)
+└── example/               # Usage examples (planned)
+```
 
 ### Design Principles
-- **Interface Segregation**: Interfaces defined where they're used
-- **Dependency Injection**: Repository pattern for storage abstraction
-- **Optimistic Locking**: Version-based concurrency control
-- **Secure by Default**: All sensitive data encrypted
 
-## Current Implementation Status
+1. **Domain-Driven Design**: User entities with encrypted PII at service layer
+2. **Repository Pattern**: Storage-agnostic interfaces defined where consumed
+3. **Security-First**: Custom error types and comprehensive security measures
+4. **Service Layer**: Business logic with go-encrypter integration
+5. **Interface Segregation**: Small, focused interfaces following Go idioms
 
-### ✅ Completed
-- **User Entity** (`user/user.go`): Complete user entity with status management, account locking, and validation
-- **Error Handling** (`errors/errors.go`): Comprehensive error definitions with structured error codes
-- **Go Module Setup**: Proper module initialization with all required dependencies
+## Quick Start
 
-### 🚧 In Progress
-- User Repository interface
-- User Service implementation
-- User validation logic
-- Session management
-- Authentication service
-- Token management
-- Configuration management
+### Installation
 
-### 📋 Planned
-- Integration tests
-- Example implementations
-- Documentation
-- Performance benchmarks
-
-## User Entity
-
-The `User` struct represents the core user entity with the following key features:
-
-### Security Features
-- **Encrypted PII**: FirstName, LastName, and Email are encrypted using go-encrypter
-- **Hashed Email**: Separate hashed email field for efficient database lookups
-- **Secure Passwords**: Argon2id password hashing
-- **Account Locking**: Temporary and permanent account locking mechanisms
-
-### Status Management
-```go
-type UserStatus int
-
-const (
-    UserStatusActive UserStatus = iota
-    UserStatusSuspended
-    UserStatusPendingVerification
-    UserStatusLocked
-    UserStatusDeactivated
-)
+```bash
+go get github.com/MichaelAJay/go-user-management
 ```
 
-### Key Methods
-- `NewUser()`: Creates a new user with proper defaults
-- `CanAuthenticate()`: Checks if user can currently authenticate
-- `IsLocked()`: Checks account lock status
-- `IncrementLoginAttempts()`: Manages failed login attempts
-- `LockAccount()` / `UnlockAccount()`: Account locking management
-- `Activate()` / `Suspend()` / `Deactivate()`: Status management
-- `Clone()`: Deep copy for optimistic locking scenarios
-- `Validate()`: Entity validation
-
-## Error Handling
-
-The package provides comprehensive error handling with:
-
-### Error Categories
-- User-related errors (not found, invalid credentials, etc.)
-- Authentication errors (account locked, not activated, etc.)
-- Session errors (expired, revoked, etc.)
-- Token errors (expired, already used, etc.)
-- Validation errors
-- System errors
-
-### Structured Errors
-```go
-type AppError struct {
-    Code    ErrorCode `json:"code"`
-    Message string    `json:"message"`
-    Details string    `json:"details,omitempty"`
-    Cause   error     `json:"-"`
-}
-```
-
-### Error Codes
-Standardized error codes for API responses:
-- `USER_NOT_FOUND`
-- `INVALID_CREDENTIALS`
-- `ACCOUNT_LOCKED`
-- `WEAK_PASSWORD`
-- And many more...
-
-## Dependencies
-
-The package integrates with your existing Go modules:
-
-- **go-encrypter**: PII encryption and password hashing
-- **go-cache**: Session storage and rate limiting
-- **go-logger**: Security event logging and audit trails
-- **go-config**: Configuration management
-- **go-metrics**: Performance monitoring
-- **go-serializer**: Data serialization
-- **github.com/google/uuid**: UUID generation
-
-## Getting Started
+### Basic Usage
 
 ```go
 package main
 
 import (
-    "fmt"
+    "context"
+    "log"
+    
+    "github.com/MichaelAJay/go-encrypter"
     "github.com/MichaelAJay/go-user-management/user"
 )
 
 func main() {
+    // Initialize encrypter for PII protection
+    key := []byte("your-32-byte-key-here-123456789012")
+    encrypter, err := encrypter.NewAESEncrypter(key)
+    if err != nil {
+        log.Fatal(err)
+    }
+    
+    // Initialize your repository implementation
+    // repo := postgres.NewUserRepository(db)
+    var repo user.UserRepository // Your implementation
+    
+    // Create user service
+    service := user.NewService(repo, encrypter)
+    
     // Create a new user
-    newUser := user.NewUser("John", "Doe", "john@example.com", "hashed_email", []byte("hashed_password"))
+    req := &user.CreateUserRequest{
+        Email:     "user@example.com",
+        FirstName: "John",
+        LastName:  "Doe",
+    }
     
-    // Check user status
-    fmt.Printf("User can authenticate: %v\n", newUser.CanAuthenticate())
+    newUser, err := service.CreateUser(context.Background(), req)
+    if err != nil {
+        log.Fatal(err)
+    }
     
-    // Activate the user
-    newUser.Activate()
-    
-    // Validate the user
-    if err := newUser.Validate(); err != nil {
-        fmt.Printf("Validation error: %v\n", err)
+    log.Printf("Created user: %s", newUser.ID)
+}
+```
+
+## Dependencies
+
+### Internal Modules
+- **go-encrypter**: PII encryption and password hashing
+- **go-cache**: Session storage and rate limiting (planned)
+- **go-config**: Configuration management (planned)
+- **go-logger**: Security event logging (planned)
+- **go-metrics**: Performance monitoring (planned)
+
+### External Dependencies
+- **github.com/google/uuid**: UUID generation for user IDs
+- **github.com/jackc/pgx/v5**: PostgreSQL driver (for repository implementations)
+- **golang.org/x/crypto**: Cryptographic functions
+
+## Security Features
+
+### PII Encryption
+- All sensitive data encrypted at rest using AES-GCM
+- Encryption occurs at service layer before repository calls
+- Automatic decryption when data is retrieved
+- Key rotation support for operational security
+
+### Password Security
+- Argon2id hashing with configurable parameters
+- Secure salt generation
+- Timing attack resistant verification
+- Password policy enforcement (planned)
+
+### Account Protection
+- Optimistic locking prevents concurrent update conflicts
+- Account lockout mechanisms (planned)
+- Rate limiting support (planned)
+- Audit logging for security events (planned)
+
+## Error Handling
+
+Structured error handling with security context:
+
+```go
+user, err := service.GetUserByEmail(ctx, "user@example.com")
+if err != nil {
+    var appErr *user.AppError
+    if errors.As(err, &appErr) {
+        switch appErr.Code {
+        case user.ErrCodeNotFound:
+            // Handle user not found
+        case user.ErrCodeInvalidEmail:
+            // Handle invalid email
+        case user.ErrCodeEncryption:
+            // Handle encryption error
+        }
     }
 }
 ```
 
-## Development
+## Repository Pattern
 
-### Building
-```bash
-go build ./...
+Implement storage backends using small, focused interfaces:
+
+```go
+type UserRepository interface {
+    UserReader
+    UserWriter
+}
+
+type UserReader interface {
+    GetByID(ctx context.Context, id uuid.UUID) (*User, error)
+    GetByEmail(ctx context.Context, email string) (*User, error)
+    Exists(ctx context.Context, email string) (bool, error)
+}
+
+type UserWriter interface {
+    Create(ctx context.Context, user *User) error
+    Update(ctx context.Context, user *User) error
+    Delete(ctx context.Context, id uuid.UUID) error
+}
 ```
 
-### Testing
-```bash
-go test ./...
+## Development Status
+
+### ✅ Completed (Core Architecture)
+- [x] User domain entity with PII encryption
+- [x] Storage-agnostic repository interfaces
+- [x] Service layer with business logic
+- [x] Structured error handling
+- [x] Request/response DTOs
+- [x] Optimistic locking support
+
+### 🚧 In Progress
+- [ ] Authentication framework
+- [ ] PostgreSQL repository implementation
+- [ ] Password authentication provider
+- [ ] Integration tests
+
+### 📋 Planned
+- [ ] Account protection (lockout, rate limiting)
+- [ ] Input validation and sanitization
+- [ ] Audit logging integration
+- [ ] OAuth/OIDC authentication providers
+- [ ] Session management
+- [ ] Database migrations
+- [ ] Mock repositories for testing
+- [ ] Comprehensive test suite
+- [ ] Performance benchmarks
+- [ ] Documentation and examples
+
+## Configuration
+
+The module uses go-config for configuration management:
+
+```go
+type Config struct {
+    Database DatabaseConfig
+    Security SecurityConfig
+    Auth     AuthConfig
+}
+
+type SecurityConfig struct {
+    EncryptionKey    string
+    PasswordPolicy   PasswordPolicyConfig
+    SessionTimeout   time.Duration
+    MaxLoginAttempts int
+}
 ```
 
-### Linting
+## Testing
+
+### Unit Tests
 ```bash
-golangci-lint run
+go test ./user/...
 ```
 
-## Next Steps
+### Integration Tests
+```bash
+go test -tags=integration ./...
+```
 
-1. **Implement Repository Interfaces**: Define storage contracts
-2. **Create User Service**: Business logic layer
-3. **Add Validation Package**: Email and password validation
-4. **Implement Session Management**: Session lifecycle management
-5. **Add Authentication Service**: Login/logout orchestration
-6. **Create Token Service**: Verification and reset tokens
-7. **Add Configuration**: Configurable security policies
-8. **Write Comprehensive Tests**: Unit and integration tests
-9. **Add Examples**: Database-specific implementations
-10. **Performance Optimization**: Caching and optimization
+### Benchmarks
+```bash
+go test -bench=. ./...
+```
 
-## Best Practices Implemented
+## Performance Considerations
 
-### Go Best Practices
-- **Clear Naming**: Descriptive names following Go conventions
-- **Interface Segregation**: Small, focused interfaces
-- **Error Handling**: Proper error wrapping and context
-- **Zero Values**: Useful zero values for all types
-- **Concurrency Safety**: Thread-safe operations
+- **Encryption Overhead**: PII encryption adds computational cost
+- **Database Design**: Optimized indexes for encrypted lookups
+- **Connection Pooling**: Efficient database connection management
+- **Caching**: Optional Redis integration for session storage
+- **Monitoring**: Metrics collection for performance tracking
 
-### Security Best Practices
-- **Encryption at Rest**: All PII encrypted
-- **Secure Password Hashing**: Argon2id with proper parameters
-- **Account Lockout**: Protection against brute force attacks
-- **Optimistic Locking**: Prevents race conditions
-- **Structured Logging**: Security event auditing
+## Contributing
 
-### Performance Best Practices
-- **Efficient Queries**: Hashed email for fast lookups
-- **Caching Strategy**: Session and user data caching
-- **Minimal Allocations**: Efficient memory usage
-- **Connection Pooling**: Database connection optimization
+1. Follow Go conventions and project patterns
+2. Write comprehensive tests for new features
+3. Update documentation for API changes
+4. Ensure security best practices
+5. Add benchmarks for performance-critical code
+
+### Code Style
+- Use Go fmt and Go vet
+- Follow interface segregation principles
+- Write table-driven tests
+- Use structured logging
+- Handle errors explicitly
 
 ## License
 
 This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Contributing
+## Support
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+For issues and questions:
+- GitHub Issues: Report bugs and feature requests
+- Documentation: Comprehensive package documentation
+- Examples: See `/example` directory for usage patterns
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request 
+## Changelog
+
+### v0.1.0 (Current)
+- Initial core architecture implementation
+- User domain entity with PII encryption
+- Repository pattern with storage abstraction
+- Service layer with business logic
+- Structured error handling
+- Request/response DTOs
+
+### Upcoming v0.2.0
+- Authentication framework
+- PostgreSQL repository implementation
+- Password authentication provider
+- Integration tests and examples
