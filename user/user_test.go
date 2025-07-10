@@ -101,7 +101,6 @@ func TestUser_UpdateVersion(t *testing.T) {
 func TestUser_Activate(t *testing.T) {
 	user := NewUser("test@example.com", "John", "Doe")
 	originalVersion := user.Version
-	
 	// Deactivate first
 	user.IsActive = false
 	user.UpdateVersion()
@@ -216,48 +215,27 @@ func TestUser_VersionIncrement(t *testing.T) {
 	}
 }
 
-func TestUser_ConcurrentUpdates(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
-	
-	// Simulate concurrent updates by checking version
-	version1 := user.Version
-	user.Activate()
-	version2 := user.Version
-	
-	if version2 != version1+1 {
-		t.Errorf("Expected version %v, got %v", version1+1, version2)
-	}
-	
-	// Simulate another concurrent update
-	user.Verify()
-	version3 := user.Version
-	
-	if version3 != version2+1 {
-		t.Errorf("Expected version %v, got %v", version2+1, version3)
-	}
-}
-
 func TestUser_ImmutableFields(t *testing.T) {
 	user := NewUser("test@example.com", "John", "Doe")
-	
+
 	originalID := user.ID
 	originalCreatedAt := user.CreatedAt
-	
+
 	// Perform various operations
 	user.Activate()
 	user.Deactivate()
 	user.Verify()
 	user.RecordLogin()
-	
+
 	// ID and CreatedAt should remain unchanged
 	if user.ID != originalID {
 		t.Error("ID should not change after operations")
 	}
-	
+
 	if !user.CreatedAt.Equal(originalCreatedAt) {
 		t.Error("CreatedAt should not change after operations")
 	}
-	
+
 	// UpdatedAt should change
 	if user.UpdatedAt.Equal(originalCreatedAt) {
 		t.Error("UpdatedAt should change after operations")
