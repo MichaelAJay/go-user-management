@@ -4,7 +4,7 @@ Shorthand module name: "UM" or "the module"
 
 ## Project Overview
 
-**Purpose**: Production-ready, pluggable user management library for Go web applications
+**Purpose**: Production-ready, pluggable user management library for Go web applications - should include metrics & logging as appropriate
 **Target Audience**: Web applications that need comprehensive user authentication and session management
 **Architecture**: Security-first, storage-agnostic library using Repository pattern with PostgreSQL as primary target
 
@@ -83,22 +83,3 @@ Shorthand module name: "UM" or "the module"
 - **Audit trails**: Log all authentication events and user modifications
 - **Rate limiting**: Implement at service layer using go-cache
 - **Session security**: Secure session tokens with proper expiration
-
-### Initial Context
-
-This module is conceived of as a flexible turnkey solution for basic user management. Examples of its use include
-
-- User creation
-- User login
-
-To illustrate the way the module should be created (and split into various packages), consider User Login.
-
-The web server which accepts the request is NOT part of the module. It will call one of the module's packages.
-
-Authentication should allow for flexibility, with multiple authentication providers capable of being configuerd in one application. Examples include password authentication, OAuth, OIDC.
-
-When considering password authentication, data storage consideration must come into play. Thus, further configuration should be available via dependency injection (in the example of password authenticator). As an example, in the root application, there may be a Postgres client which is injected into the "orchestration" entity that one of the module's packages exposes. This would be further passed in to the Password Manager.
-
-Thus, the Password authenticator would use any storage client, which would expose a uniform interface, but concrete providers (such as a Postgres provider) would implement Postgres specific needs.
-
-The module should ultimately handle all basic user management needs, with capability to be extended for a specific application's further needs.
