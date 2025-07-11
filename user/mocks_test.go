@@ -60,7 +60,7 @@ func (m *MockUserRepository) GetByEmail(ctx context.Context, email string) (*Use
 	// For testing purposes, we'll check both encrypted and plain email
 	// In real implementation, this would use a lookup hash or encrypt the search term
 	for _, user := range m.users {
-		if user.Email == email || user.Email == "encrypted:"+email {
+		if string(user.Email) == email || string(user.Email) == "encrypted:"+email {
 			// Return a copy to prevent modifications
 			userCopy := *user
 			return &userCopy, nil
@@ -82,7 +82,7 @@ func (m *MockUserRepository) Exists(ctx context.Context, email string) (bool, er
 	// For testing purposes, we'll check both encrypted and plain email
 	// In real implementation, this would use a lookup hash or encrypt the search term
 	for _, user := range m.users {
-		if user.Email == email || user.Email == "encrypted:"+email {
+		if string(user.Email) == email || string(user.Email) == "encrypted:"+email {
 			return true, nil
 		}
 	}
@@ -101,7 +101,7 @@ func (m *MockUserRepository) Create(ctx context.Context, user *User) error {
 
 	// Check if user already exists
 	for _, existingUser := range m.users {
-		if existingUser.Email == user.Email {
+		if string(existingUser.Email) == string(user.Email) {
 			return errors.New("user already exists")
 		}
 	}

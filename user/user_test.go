@@ -10,21 +10,21 @@ import (
 func TestNewUser(t *testing.T) {
 	tests := []struct {
 		name      string
-		email     string
-		firstName string
-		lastName  string
+		email     []byte
+		firstName []byte
+		lastName  []byte
 	}{
 		{
 			name:      "valid user creation",
-			email:     "test@example.com",
-			firstName: "John",
-			lastName:  "Doe",
+			email:     []byte("encrypted:test@example.com"),
+			firstName: []byte("encrypted:John"),
+			lastName:  []byte("encrypted:Doe"),
 		},
 		{
 			name:      "user with empty fields",
-			email:     "",
-			firstName: "",
-			lastName:  "",
+			email:     []byte(""),
+			firstName: []byte(""),
+			lastName:  []byte(""),
 		},
 	}
 
@@ -40,16 +40,16 @@ func TestNewUser(t *testing.T) {
 				t.Error("NewUser() should generate a valid UUID")
 			}
 
-			if user.Email != tt.email {
-				t.Errorf("NewUser() email = %v, want %v", user.Email, tt.email)
+			if string(user.Email) != string(tt.email) {
+				t.Errorf("NewUser() email = %v, want %v", string(user.Email), string(tt.email))
 			}
 
-			if user.FirstName != tt.firstName {
-				t.Errorf("NewUser() firstName = %v, want %v", user.FirstName, tt.firstName)
+			if string(user.FirstName) != string(tt.firstName) {
+				t.Errorf("NewUser() firstName = %v, want %v", string(user.FirstName), string(tt.firstName))
 			}
 
-			if user.LastName != tt.lastName {
-				t.Errorf("NewUser() lastName = %v, want %v", user.LastName, tt.lastName)
+			if string(user.LastName) != string(tt.lastName) {
+				t.Errorf("NewUser() lastName = %v, want %v", string(user.LastName), string(tt.lastName))
 			}
 
 			if !user.IsActive {
@@ -80,7 +80,7 @@ func TestNewUser(t *testing.T) {
 }
 
 func TestUser_UpdateVersion(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	originalVersion := user.Version
 	originalUpdatedAt := user.UpdatedAt
 
@@ -99,7 +99,7 @@ func TestUser_UpdateVersion(t *testing.T) {
 }
 
 func TestUser_Activate(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	originalVersion := user.Version
 	// Deactivate first
 	user.IsActive = false
@@ -122,7 +122,7 @@ func TestUser_Activate(t *testing.T) {
 }
 
 func TestUser_Deactivate(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	originalVersion := user.Version
 
 	user.Deactivate()
@@ -137,7 +137,7 @@ func TestUser_Deactivate(t *testing.T) {
 }
 
 func TestUser_Verify(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	originalVersion := user.Version
 
 	if user.IsVerified {
@@ -156,7 +156,7 @@ func TestUser_Verify(t *testing.T) {
 }
 
 func TestUser_RecordLogin(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	originalVersion := user.Version
 
 	if user.LastLoginAt != nil {
@@ -190,7 +190,7 @@ func TestUser_RecordLogin(t *testing.T) {
 }
 
 func TestUser_VersionIncrement(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	initialVersion := user.Version
 
 	// Test that all mutating methods increment version
@@ -216,7 +216,7 @@ func TestUser_VersionIncrement(t *testing.T) {
 }
 
 func TestUser_ImmutableFields(t *testing.T) {
-	user := NewUser("test@example.com", "John", "Doe")
+	user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 
 	originalID := user.ID
 	originalCreatedAt := user.CreatedAt

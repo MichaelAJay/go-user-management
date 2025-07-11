@@ -16,11 +16,6 @@ type Service struct {
 	encrypter encrypter.Encrypter
 }
 
-type unencryptedUserPII struct {
-	Email     string
-	FirstName string
-	LastName  string
-}
 
 // NewService creates a new user service
 func NewService(repo UserRepository, enc encrypter.Encrypter) *Service {
@@ -31,7 +26,7 @@ func NewService(repo UserRepository, enc encrypter.Encrypter) *Service {
 }
 
 // CreateUser creates a new user with PII encryption
-func (s *Service) CreateUser(ctx context.Context, req *CreateUserRequest) (*User, error) {
+func (s *Service) CreateUser(ctx context.Context, req *CreateUserRequest) (*UserResponse, error) {
 	if err := s.validateCreateUserRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
@@ -46,38 +41,35 @@ func (s *Service) CreateUser(ctx context.Context, req *CreateUserRequest) (*User
 	}
 
 	// Encrypt PII data before creating User
-	creationData := &unencryptedUserPII{
-		Email:     req.Email,
-		FirstName: req.FirstName,
-		LastName:  req.LastName,
+	encryptedEmail, err := s.encrypter.Encrypt([]byte(req.Email))
+	if err != nil {
+		return nil, NewEncryptionError("failed to encrypt email", err)
 	}
 
-	encryptedData, err := s.encryptCreationData(creationData)
+	encryptedFirstName, err := s.encrypter.Encrypt([]byte(req.FirstName))
 	if err != nil {
-		return nil, NewEncryptionError("failed to encrypt user PII", err)
+		return nil, NewEncryptionError("failed to encrypt first name", err)
+	}
+
+	encryptedLastName, err := s.encrypter.Encrypt([]byte(req.LastName))
+	if err != nil {
+		return nil, NewEncryptionError("failed to encrypt last name", err)
 	}
 
 	// Create user with encrypted data - PII never exists unencrypted in User
-	user := NewUser(encryptedData.Email, encryptedData.FirstName, encryptedData.LastName)
+	user := NewUser(encryptedEmail, encryptedFirstName, encryptedLastName)
 
 	// Store user
 	if err := s.repo.Create(ctx, user); err != nil {
 		return nil, NewStorageError("failed to create user", err)
 	}
 
-	// Decrypt PII for return (service layer responsibility)
-	// @TODO use the decrypted value
-	_, err = s.decryptUserPII(user)
-	if err != nil {
-		return nil, NewEncryptionError("failed to decrypt user PII", err)
-	}
-
-	// @TODO change return type
-	return user, nil
+	// Return UserResponse with decrypted PII
+	return s.toUserResponse(user)
 }
 
 // GetUserByID retrieves a user by ID with PII decryption
-func (s *Service) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
+func (s *Service) GetUserByID(ctx context.Context, id uuid.UUID) (*UserResponse, error) {
 	user, err := s.repo.GetByID(ctx, id)
 	if err != nil {
 		return nil, NewStorageError("failed to get user by ID", err)
@@ -86,18 +78,12 @@ func (s *Service) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) 
 		return nil, NewNotFoundError("user not found")
 	}
 
-	// Decrypt PII fields
-	// @TODO use the decrypted value
-	_, err = s.decryptUserPII(user)
-	if err != nil {
-		return nil, NewEncryptionError("failed to decrypt user PII", err)
-	}
-
-	return user, nil
+	// Return UserResponse with decrypted PII
+	return s.toUserResponse(user)
 }
 
 // GetUserByEmail retrieves a user by email with PII decryption
-func (s *Service) GetUserByEmail(ctx context.Context, email string) (*User, error) {
+func (s *Service) GetUserByEmail(ctx context.Context, email string) (*UserResponse, error) {
 	if !s.isValidEmail(email) {
 		return nil, NewInvalidEmailError("invalid email format")
 	}
@@ -110,18 +96,12 @@ func (s *Service) GetUserByEmail(ctx context.Context, email string) (*User, erro
 		return nil, NewNotFoundError("user not found")
 	}
 
-	// Decrypt PII fields
-	// @TODO use the decrypted value
-	_, err = s.decryptUserPII(user)
-	if err != nil {
-		return nil, NewEncryptionError("failed to decrypt user PII", err)
-	}
-
-	return user, nil
+	// Return UserResponse with decrypted PII
+	return s.toUserResponse(user)
 }
 
 // UpdateUser updates a user with optimistic locking
-func (s *Service) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User, error) {
+func (s *Service) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*UserResponse, error) {
 	if err := s.validateUpdateUserRequest(req); err != nil {
 		return nil, fmt.Errorf("validation failed: %w", err)
 	}
@@ -140,12 +120,26 @@ func (s *Service) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User
 		return nil, NewVersionMismatchError("user was modified by another process")
 	}
 
+	// Decrypt current user PII for updates
+	emailBytes, err := s.encrypter.Decrypt(currentUser.Email)
+	if err != nil {
+		return nil, NewEncryptionError("failed to decrypt email", err)
+	}
+	firstNameBytes, err := s.encrypter.Decrypt(currentUser.FirstName)
+	if err != nil {
+		return nil, NewEncryptionError("failed to decrypt first name", err)
+	}
+	lastNameBytes, err := s.encrypter.Decrypt(currentUser.LastName)
+	if err != nil {
+		return nil, NewEncryptionError("failed to decrypt last name", err)
+	}
+
 	// Update fields
 	if req.FirstName != nil {
-		currentUser.FirstName = *req.FirstName
+		firstNameBytes = []byte(*req.FirstName)
 	}
 	if req.LastName != nil {
-		currentUser.LastName = *req.LastName
+		lastNameBytes = []byte(*req.LastName)
 	}
 	if req.IsActive != nil {
 		currentUser.IsActive = *req.IsActive
@@ -157,24 +151,32 @@ func (s *Service) UpdateUser(ctx context.Context, req *UpdateUserRequest) (*User
 	// Update version
 	currentUser.UpdateVersion()
 
-	// Encrypt PII fields before storing
-	if err := s.encryptUserPII(currentUser); err != nil {
-		return nil, NewEncryptionError("failed to encrypt user PII", err)
+	// Encrypt updated PII fields
+	encryptedEmail, err := s.encrypter.Encrypt(emailBytes)
+	if err != nil {
+		return nil, NewEncryptionError("failed to encrypt email", err)
 	}
+	encryptedFirstName, err := s.encrypter.Encrypt(firstNameBytes)
+	if err != nil {
+		return nil, NewEncryptionError("failed to encrypt first name", err)
+	}
+	encryptedLastName, err := s.encrypter.Encrypt(lastNameBytes)
+	if err != nil {
+		return nil, NewEncryptionError("failed to encrypt last name", err)
+	}
+
+	// Update user with encrypted PII
+	currentUser.Email = encryptedEmail
+	currentUser.FirstName = encryptedFirstName
+	currentUser.LastName = encryptedLastName
 
 	// Store updated user
 	if err := s.repo.Update(ctx, currentUser); err != nil {
 		return nil, NewStorageError("failed to update user", err)
 	}
 
-	// Decrypt PII for return
-	// @TODO use the decrypted value
-	_, err = s.decryptUserPII(currentUser)
-	if err != nil {
-		return nil, NewEncryptionError("failed to decrypt user PII", err)
-	}
-
-	return currentUser, nil
+	// Return UserResponse with decrypted PII
+	return s.toUserResponse(currentUser)
 }
 
 // DeleteUser deletes a user
@@ -197,10 +199,7 @@ func (s *Service) ActivateUser(ctx context.Context, id uuid.UUID) error {
 
 	user.Activate()
 
-	// Encrypt PII before storing
-	if err := s.encryptUserPII(user); err != nil {
-		return NewEncryptionError("failed to encrypt user PII", err)
-	}
+	// User is already encrypted, no need to encrypt again
 
 	if err := s.repo.Update(ctx, user); err != nil {
 		return NewStorageError("failed to update user", err)
@@ -221,10 +220,7 @@ func (s *Service) DeactivateUser(ctx context.Context, id uuid.UUID) error {
 
 	user.Deactivate()
 
-	// Encrypt PII before storing
-	if err := s.encryptUserPII(user); err != nil {
-		return NewEncryptionError("failed to encrypt user PII", err)
-	}
+	// User is already encrypted, no need to encrypt again
 
 	if err := s.repo.Update(ctx, user); err != nil {
 		return NewStorageError("failed to update user", err)
@@ -249,10 +245,7 @@ func (s *Service) RecordLogin(ctx context.Context, id uuid.UUID) error {
 
 	user.RecordLogin()
 
-	// Encrypt PII before storing
-	if err := s.encryptUserPII(user); err != nil {
-		return NewEncryptionError("failed to encrypt user PII", err)
-	}
+	// User is already encrypted, no need to encrypt again
 
 	if err := s.repo.Update(ctx, user); err != nil {
 		return NewStorageError("failed to update user", err)
@@ -261,81 +254,35 @@ func (s *Service) RecordLogin(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// encryptCreationData encrypts PII fields in creation data
-func (s *Service) encryptCreationData(data *unencryptedUserPII) (*unencryptedUserPII, error) {
-	emailBytes, err := s.encrypter.Encrypt([]byte(data.Email))
+// toUserResponse converts a User to UserResponse with decrypted PII
+func (s *Service) toUserResponse(user *User) (*UserResponse, error) {
+	// Decrypt PII fields
+	emailBytes, err := s.encrypter.Decrypt(user.Email)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt email: %w", err)
+		return nil, NewEncryptionError("failed to decrypt email", err)
 	}
 
-	firstNameBytes, err := s.encrypter.Encrypt([]byte(data.FirstName))
+	firstNameBytes, err := s.encrypter.Decrypt(user.FirstName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt first name: %w", err)
+		return nil, NewEncryptionError("failed to decrypt first name", err)
 	}
 
-	lastNameBytes, err := s.encrypter.Encrypt([]byte(data.LastName))
+	lastNameBytes, err := s.encrypter.Decrypt(user.LastName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt last name: %w", err)
+		return nil, NewEncryptionError("failed to decrypt last name", err)
 	}
 
-	return &unencryptedUserPII{
-		Email:     string(emailBytes),
-		FirstName: string(firstNameBytes),
-		LastName:  string(lastNameBytes),
-	}, nil
-}
-
-// encryptUserPII encrypts PII fields in the user
-func (s *Service) encryptUserPII(user *User) error {
-	var err error
-
-	// Convert string to bytes, encrypt, then convert back to string
-	emailBytes, err := s.encrypter.Encrypt([]byte(user.Email))
-	if err != nil {
-		return fmt.Errorf("failed to encrypt email: %w", err)
-	}
-	user.Email = string(emailBytes)
-
-	firstNameBytes, err := s.encrypter.Encrypt([]byte(user.FirstName))
-	if err != nil {
-		return fmt.Errorf("failed to encrypt first name: %w", err)
-	}
-	user.FirstName = string(firstNameBytes)
-
-	lastNameBytes, err := s.encrypter.Encrypt([]byte(user.LastName))
-	if err != nil {
-		return fmt.Errorf("failed to encrypt last name: %w", err)
-	}
-	user.LastName = string(lastNameBytes)
-
-	return nil
-}
-
-// decryptUserPII decrypts PII fields in the user
-// This method may be better if it returns a decrypted user struct, so we know exactly what it is...
-func (s *Service) decryptUserPII(user *User) (*unencryptedUserPII, error) {
-	var err error
-
-	// Convert string to bytes, decrypt, then convert back to string
-	emailBytes, err := s.encrypter.Decrypt([]byte(user.Email))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt email: %w", err)
-	}
-
-	firstNameBytes, err := s.encrypter.Decrypt([]byte(user.FirstName))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt first name: %w", err)
-	}
-
-	lastNameBytes, err := s.encrypter.Decrypt([]byte(user.LastName))
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt last name: %w", err)
-	}
-
-	return &unencryptedUserPII{
-		Email:     string(emailBytes),
-		FirstName: string(firstNameBytes),
-		LastName:  string(lastNameBytes),
+	return &UserResponse{
+		ID:          user.ID,
+		Email:       string(emailBytes),
+		FirstName:   string(firstNameBytes),
+		LastName:    string(lastNameBytes),
+		IsActive:    user.IsActive,
+		IsVerified:  user.IsVerified,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		LastLoginAt: user.LastLoginAt,
+		Version:     user.Version,
 	}, nil
 }
 

@@ -118,7 +118,7 @@ func TestService_CreateUser(t *testing.T) {
 			},
 			setupMocks: func(repo *MockUserRepository, enc *MockEncrypter) {
 				// Create a user first
-				existingUser := NewUser("test@example.com", "Jane", "Smith")
+				existingUser := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:Jane"), []byte("encrypted:Smith"))
 				repo.Create(context.Background(), existingUser)
 			},
 			wantErr:       true,
@@ -148,7 +148,7 @@ func TestService_CreateUser(t *testing.T) {
 				enc.SetEncryptError(errors.New("encryption failed"))
 			},
 			wantErr:       true,
-			expectedError: "failed to encrypt user PII",
+			expectedError: "failed to encrypt email",
 		},
 		{
 			name: "repository create error",
@@ -194,7 +194,7 @@ func TestService_CreateUser(t *testing.T) {
 				return
 			}
 
-			// Verify user properties
+			// Verify user properties - now returns UserResponse with decrypted PII
 			if user.Email != tt.request.Email {
 				t.Errorf("CreateUser() email = %v, want %v", user.Email, tt.request.Email)
 			}
@@ -230,12 +230,12 @@ func TestService_GetUserByID(t *testing.T) {
 			name:   "successful user retrieval",
 			userID: uuid.New(),
 			setupMocks: func(repo *MockUserRepository, enc *MockEncrypter) {
-				user := NewUser("test@example.com", "John", "Doe")
+				user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 				user.ID = uuid.New()
 				// Store user with encrypted data (mock will handle encryption)
-				user.Email = "encrypted:test@example.com"
-				user.FirstName = "encrypted:John"
-				user.LastName = "encrypted:Doe"
+				user.Email = []byte("encrypted:test@example.com")
+				user.FirstName = []byte("encrypted:John")
+				user.LastName = []byte("encrypted:Doe")
 				repo.Create(context.Background(), user)
 			},
 			wantErr: false,
@@ -262,16 +262,16 @@ func TestService_GetUserByID(t *testing.T) {
 			name:   "decryption error",
 			userID: uuid.New(),
 			setupMocks: func(repo *MockUserRepository, enc *MockEncrypter) {
-				user := NewUser("test@example.com", "John", "Doe")
+				user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 				// Store user with encrypted data
-				user.Email = "encrypted:test@example.com"
-				user.FirstName = "encrypted:John"
-				user.LastName = "encrypted:Doe"
+				user.Email = []byte("encrypted:test@example.com")
+				user.FirstName = []byte("encrypted:John")
+				user.LastName = []byte("encrypted:Doe")
 				repo.Create(context.Background(), user)
 				enc.SetDecryptError(errors.New("decryption failed"))
 			},
 			wantErr:       true,
-			expectedError: "failed to decrypt user PII",
+			expectedError: "failed to decrypt email",
 		},
 	}
 
@@ -336,11 +336,11 @@ func TestService_GetUserByEmail(t *testing.T) {
 			name:  "successful user retrieval",
 			email: "test@example.com",
 			setupMocks: func(repo *MockUserRepository, enc *MockEncrypter) {
-				user := NewUser("test@example.com", "John", "Doe")
+				user := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 				// Store user with encrypted email that will be searched
-				user.Email = "encrypted:test@example.com"
-				user.FirstName = "encrypted:John"
-				user.LastName = "encrypted:Doe"
+				user.Email = []byte("encrypted:test@example.com")
+				user.FirstName = []byte("encrypted:John")
+				user.LastName = []byte("encrypted:Doe")
 				repo.Create(context.Background(), user)
 			},
 			wantErr: false,
@@ -403,6 +403,7 @@ func TestService_GetUserByEmail(t *testing.T) {
 				return
 			}
 
+			// Service now returns UserResponse with decrypted email
 			if user.Email != tt.email {
 				t.Errorf("GetUserByEmail() email = %v, want %v", user.Email, tt.email)
 			}
@@ -411,7 +412,7 @@ func TestService_GetUserByEmail(t *testing.T) {
 }
 
 func TestService_UpdateUser(t *testing.T) {
-	existingUser := NewUser("test@example.com", "John", "Doe")
+	existingUser := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	existingUser.Version = 1
 
 	tests := []struct {
@@ -516,7 +517,7 @@ func TestService_UpdateUser(t *testing.T) {
 }
 
 func TestService_DeleteUser(t *testing.T) {
-	existingUser := NewUser("test@example.com", "John", "Doe")
+	existingUser := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 
 	tests := []struct {
 		name          string
@@ -572,7 +573,7 @@ func TestService_DeleteUser(t *testing.T) {
 }
 
 func TestService_ActivateUser(t *testing.T) {
-	existingUser := NewUser("test@example.com", "John", "Doe")
+	existingUser := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	existingUser.IsActive = false
 
 	tests := []struct {
@@ -629,10 +630,10 @@ func TestService_ActivateUser(t *testing.T) {
 }
 
 func TestService_RecordLogin(t *testing.T) {
-	existingUser := NewUser("test@example.com", "John", "Doe")
+	existingUser := NewUser([]byte("encrypted:test@example.com"), []byte("encrypted:John"), []byte("encrypted:Doe"))
 	existingUser.IsActive = true
 
-	inactiveUser := NewUser("inactive@example.com", "Jane", "Doe")
+	inactiveUser := NewUser([]byte("encrypted:inactive@example.com"), []byte("encrypted:Jane"), []byte("encrypted:Doe"))
 	inactiveUser.IsActive = false
 
 	tests := []struct {
@@ -727,4 +728,3 @@ func TestService_EmailValidation(t *testing.T) {
 		})
 	}
 }
-

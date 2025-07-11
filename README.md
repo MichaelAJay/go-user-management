@@ -112,6 +112,7 @@ func main() {
 - All sensitive data encrypted at rest using AES-GCM
 - Encryption occurs at service layer before repository calls
 - Automatic decryption when data is retrieved
+- Clear separation between encrypted and unencrypted data types
 - Key rotation support for operational security
 
 ### Password Security
